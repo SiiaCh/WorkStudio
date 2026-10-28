@@ -1,5 +1,0 @@
-import type { Tariff } from "../types";
-
-export default function TariffsPage({ tariffs, onSelect }: { tariffs: Tariff[]; onSelect: (tariff: Tariff) => void }) {
-  return <><header className="page-header"><div><p className="eyebrow">02 — PRICING PLANS</p><h1>Choose your plan</h1><p className="muted">Select a tariff for your workspace booking.</p></div></header><div className="tariff-grid">{tariffs.map((t, i) => <article className={`tariff-card ${i === 1 ? "featured" : ""}`} key={t.id}><span className="tariff-kicker">{t.name}</span><div className="tariff-price">₴{t.price.toLocaleString("en-US")}<small> / {t.unit}</small></div><div className="tariff-divider"/><p>{t.description}</p><button className={`button ${i === 1 ? "light" : "outline"}`} onClick={() => onSelect(t)}>Select tariff</button></article>)}</div></>;
-}
