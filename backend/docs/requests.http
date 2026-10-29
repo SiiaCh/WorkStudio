@@ -1,0 +1,53 @@
+# Manual examples for an HTTP client. Replace placeholders from actual responses.
+# Development loopback only; use HTTPS in deployment.
+@base = http://127.0.0.1:3000/api
+@token = REPLACE_WITH_JWT_FROM_LOGIN
+@verificationToken = REPLACE_WITH_64_HEX_CHARACTERS
+
+### Health: 200 when connected
+GET {{base}}/health
+
+### Register: 201; public role is always CLIENT
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name":"QA Client","email":"qa.client@example.com","password":"Stage1-example-password!"}
+
+### Verification: 200 once; replay 400
+POST {{base}}/auth/verify-email
+Content-Type: application/json
+
+{"token":"{{verificationToken}}"}
+
+### Resend: 202, previous token invalidated
+POST {{base}}/auth/resend-verification
+Content-Type: application/json
+
+{"email":"qa.client@example.com"}
+
+### Login: 200; copy data.accessToken into token above
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email":"qa.client@example.com","password":"Stage1-example-password!"}
+
+### Own profile: 200 with active token
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### Administrator session: CLIENT gets 403; ADMINISTRATOR gets 200
+GET {{base}}/admin/session
+Authorization: Bearer {{token}}
+
+### Logout current session: 200; subsequent me request gets 401
+POST {{base}}/auth/logout
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### Reject public privilege escalation: 400
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name":"QA Client","email":"qa.other@example.com","password":"Stage1-example-password!","role":"ADMINISTRATOR"}
