@@ -1,4 +1,6 @@
 import express from "express";
+import { workspaceRouter, tariffRouter, adminCatalogRouter } from "./routes/catalog.js";
+import { bookingRouter, adminBookingRouter, notificationRouter } from "./routes/bookings.js";
 import helmet from "helmet";
 import cors from "cors";
 import { env } from "./config/env.js";
@@ -20,14 +22,25 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) callback(null, true);
     else callback(new AppError(403, "ORIGIN_NOT_ALLOWED", "This application origin is not allowed."));
   },
-  credentials: false, methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"], exposedHeaders: ["Retry-After"],
+  credentials: false, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"], exposedHeaders: ["Retry-After"],
 }));
-app.use(ipLimit(300, 15 * 60_000));
+const generalLimit = ipLimit(300, 15 * 60_000);
+app.use((req, res, next) => {
+  // Polling reads have their own limit, sized for shared coworking network addresses.
+  if (req.method === "GET" && ["/api/workspaces/availability", "/api/notifications"].includes(req.path.replace(/\/$/, ""))) return next();
+  return generalLimit(req, res, next);
+});
 app.use(requireJson);
 app.use(express.json({ limit: "16kb", inflate: false }));
 app.use("/api/health", healthRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/workspaces", workspaceRouter);
+app.use("/api/tariffs", tariffRouter);
+app.use("/api/bookings", bookingRouter);
+app.use("/api/notifications", notificationRouter);
+app.use("/api/admin/bookings", adminBookingRouter);
+app.use("/api/admin", adminCatalogRouter);
 app.use((_req, _res, next) => next(new AppError(404, "NOT_FOUND", "The requested endpoint does not exist.")));
 app.use(errorHandler);

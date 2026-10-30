@@ -11,7 +11,7 @@ GET {{base}}/health
 POST {{base}}/auth/register
 Content-Type: application/json
 
-{"name":"QA Client","email":"qa.client@example.com","password":"Stage1-example-password!"}
+{"name":"QA Client","email":"qa.client@example.com","password":"WorkStudio-example-password!"}
 
 ### Verification: 200 once; replay 400
 POST {{base}}/auth/verify-email
@@ -29,7 +29,7 @@ Content-Type: application/json
 POST {{base}}/auth/login
 Content-Type: application/json
 
-{"email":"qa.client@example.com","password":"Stage1-example-password!"}
+{"email":"qa.client@example.com","password":"WorkStudio-example-password!"}
 
 ### Own profile: 200 with active token
 GET {{base}}/auth/me
@@ -50,4 +50,176 @@ Content-Type: application/json
 POST {{base}}/auth/register
 Content-Type: application/json
 
-{"name":"QA Client","email":"qa.other@example.com","password":"Stage1-example-password!","role":"ADMINISTRATOR"}
+{"name":"QA Client","email":"qa.other@example.com","password":"WorkStudio-example-password!","role":"ADMINISTRATOR"}
+
+### Workspaces, tariffs and bookings
+# Use real UUIDs from responses and a future facility-local date.
+# Each {{$guid}} creates a fresh operation key. For a deliberate retry, retain the SAME UUID.
+@workspaceId = REPLACE_WITH_WORKSPACE_UUID
+@alternativeWorkspaceId = REPLACE_WITH_ALTERNATIVE_UUID
+@tariffId = REPLACE_WITH_TARIFF_UUID
+@bookingId = REPLACE_WITH_BOOKING_UUID
+@clientId = REPLACE_WITH_CLIENT_UUID
+@notificationId = REPLACE_WITH_NOTIFICATION_UUID
+@adminToken = REPLACE_WITH_ADMINISTRATOR_JWT
+@bookingDate = 2026-11-02
+@recordVersion = 1
+
+### Public workspace/map catalog
+GET {{base}}/workspaces
+
+### Availability for selected local interval (Europe/Kyiv by default)
+GET {{base}}/workspaces/availability?date={{bookingDate}}&startTime=10:00&endTime=11:00
+
+### Available-until from the selected date's opening time (or now for today)
+GET {{base}}/workspaces/availability?date={{bookingDate}}
+
+### Client tariff list
+GET {{base}}/tariffs
+Authorization: Bearer {{token}}
+
+### Administrator: create workspace (always FREE)
+POST {{base}}/admin/workspaces
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"name":"Desk A1","type":"Desk","location":"Main hall, zone A","description":"Desk by the window","mapPosition":{"x":0.25,"y":0.40}}
+
+### Administrator: edit workspace catalog fields, using latest version
+PATCH {{base}}/admin/workspaces/{{workspaceId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"description":"Desk with monitor"}
+
+### Administrator: create fixed-price UAH tariff
+POST {{base}}/admin/tariffs
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"name":"Standard reservation","price":"150.00"}
+
+### Administrator: change tariff price (old booking snapshots remain unchanged)
+PATCH {{base}}/admin/tariffs/{{tariffId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"price":"180.00"}
+
+### Verified client: confirm and create a Pending Payment hold
+POST {{base}}/bookings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","date":"{{bookingDate}}","startTime":"10:00","endTime":"11:00","confirm":true}
+
+### Client: own booking only (another client's ID returns 404)
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Client history (newest booking first)
+GET {{base}}/bookings/history?page=1&pageSize=25
+Authorization: Bearer {{token}}
+
+### Client history filtered by agreed timeout terminal status
+GET {{base}}/bookings/history?status=CANCELLED
+Authorization: Bearer {{token}}
+
+### Client calendar (default current month; supply local date bounds for another period)
+GET {{base}}/bookings/calendar
+Authorization: Bearer {{token}}
+
+### Preview recurrence; creates no holds
+POST {{base}}/bookings/recurring/preview
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","fromDate":"2026-11-02","toDate":"2026-11-13","weekdays":[1,3,5],"startTime":"10:00","endTime":"11:00"}
+
+### Confirm whole series, explicitly accepting any proposed alternative
+# Update the alternative date/desk from the preview; omit alternatives when none are needed.
+POST {{base}}/bookings/recurring
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","fromDate":"2026-11-02","toDate":"2026-11-13","weekdays":[1,3,5],"startTime":"10:00","endTime":"11:00","alternatives":[{"date":"2026-11-04","workspaceId":"{{alternativeWorkspaceId}}"}],"confirm":true}
+
+### Administrator: filtered booking list
+GET {{base}}/admin/bookings?userId={{clientId}}&page=1&pageSize=25
+Authorization: Bearer {{adminToken}}
+
+### Administrator: create on behalf of an email-verified client
+POST {{base}}/admin/bookings
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"userId":"{{clientId}}","workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","date":"{{bookingDate}}","startTime":"14:00","endTime":"15:00","confirm":true}
+
+### Administrator: edit booking, preserving saved price and original payment deadline
+PATCH {{base}}/admin/bookings/{{bookingId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","date":"{{bookingDate}}","startTime":"15:00","endTime":"16:00","version":{{recordVersion}},"confirm":true}
+
+### Administrator: cancel an active booking
+POST {{base}}/admin/bookings/{{bookingId}}/cancel
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Administrator: inspect affected bookings before setting Unavailable
+GET {{base}}/admin/workspaces/{{workspaceId}}/affected-bookings
+Authorization: Bearer {{adminToken}}
+
+### Administrator: atomic Unavailable resolution
+# Include one resolution for EVERY affected booking returned above.
+PATCH {{base}}/admin/workspaces/{{workspaceId}}/status
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"status":"UNAVAILABLE","confirm":true,"resolutions":[{"bookingId":"{{bookingId}}","action":"REASSIGN","workspaceId":"{{alternativeWorkspaceId}}"}]}
+
+### Administrator: Occupied describes current use and leaves bookings unchanged
+PATCH {{base}}/admin/workspaces/{{workspaceId}}/status
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"status":"OCCUPIED"}
+
+### Administrator: delete only after all current/upcoming active bookings are resolved
+DELETE {{base}}/admin/workspaces/{{workspaceId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Administrator: logically delete tariff, preserving booking snapshots
+DELETE {{base}}/admin/tariffs/{{tariffId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Client-owned durable notifications
+GET {{base}}/notifications?page=1&pageSize=25
+Authorization: Bearer {{token}}
+
+### Client: acknowledge own notification
+POST {{base}}/notifications/{{notificationId}}/read
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}

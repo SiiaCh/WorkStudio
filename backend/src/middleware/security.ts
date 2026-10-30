@@ -8,7 +8,7 @@ export const requireSecureTransport: RequestHandler = (req, _res, next) => {
   next();
 };
 export const requireJson: RequestHandler = (req, _res, next) => {
-  if (["POST", "PUT", "PATCH"].includes(req.method) && !req.is("application/json")) throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Set Content-Type to application/json.");
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method) && !req.is("application/json")) throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Set Content-Type to application/json.");
   next();
 };
 export function ipLimit(limit: number, windowMs: number) {

@@ -1,87 +1,87 @@
-# WorkStudio Backend - Stage 1
+# WorkStudio Backend
 
-Independent Node.js 24 / TypeScript / Express REST API using the existing local PostgreSQL installation, Prisma, Zod, bcrypt and JWT. No frontend files or future-stage features are implemented.
+WorkStudio Backend is the REST API for a coworking workspace reservation and management platform. It centralizes authentication, workspace availability, pricing, and booking rules for the React administrator interface and Android client.
 
-## Requirements and decisions
+## Technology stack
 
-Read against `../docs/SRS document.pdf`: GC-1/4/5/6/9, AS-4/7, FR-AUTH-01 through FR-AUTH-08, User section 3.4.1, NFR-SEC-01 through NFR-SEC-06, IR-04/05/09 and section 3.8.
+- **Node.js 24** and **TypeScript**
+- **Express** for the REST API
+- **PostgreSQL** with **Prisma ORM** and migrations
+- **Zod** for request validation
+- **JWT**, database-backed sessions, and **bcrypt** for authentication
+- **Nodemailer** for SMTP email verification; Helmet, CORS, and rate limiting for API protection
 
-- Registration requires **name, email, password**, with passwords at least **8 characters** (FR-AUTH-01/02). Maximum 72 UTF-8 bytes prevents bcrypt's silent truncation. Passwords are not trimmed.
-- Emails are trimmed and lowercased before validation/storage/lookup; uniqueness is enforced in PostgreSQL, including concurrent registrations.
-- Public registration rejects unknown properties, including `role`. It always creates `CLIENT`.
-- AS-7 requires verification **before booking**, not before login. Unverified users can log in and read their own profile. `requireVerifiedEmail` is provided for future booking routes; bookings are not implemented.
-- JWTs expire after 8 hours by default. Database sessions also expire after 30 minutes without an authenticated request (FR-AUTH-07). No refresh-token flow: log in again. Logout invalidates only the current session, immediately for subsequent requests; other sessions remain active.
-- These timeouts, verification expiry (24 hours), and login limits are configurable implementation defaults, not durations specified by the SRS.
-- Five failed logins within a rolling 15-minute inactivity window block that account for 15 minutes (FR-AUTH-08). Counters and locks persist in PostgreSQL and serialize concurrent attempts. A successful login resets counters; an expired block starts a new count.
-- Additional per-IP limits use process memory: all requests 300/15 minutes; login and verification together 100/15 minutes; registration 10/hour; resend 10/hour. They reset on process restart. The account login limit remains effective across restarts and instances.
-- Only bcrypt password hashes and SHA-256 token digests are stored in the database. Raw JWTs and verification tokens are never logged. Roles and verification status come from the database on each authenticated request.
-- Optional Google login and integrations are excluded.
+## Features
 
-The SRS does not choose a database product; PostgreSQL/Prisma are explicitly selected by the project instructions. The frontend demo accepts 6-character passwords; integration must use the SRS minimum of 8. NFR-MNT-03 specifies automated coverage: that remains QA acceptance work because this task explicitly forbids creating an automated suite.
+**Authentication and access**
 
-## Folder structure and important files
+- Client registration, email verification and resend, login, and session-specific logout.
+- Client and Administrator roles, protected profiles, inactivity expiry, and failed-login limits.
+- Email verification required before creating bookings.
 
-```text
-backend/
-  .env.example                 configuration reference (no secrets)
-  .gitignore                   excludes .env, generated client, build and dependencies
-  package.json / package-lock.json
-  tsconfig.json
-  prisma.config.ts             migration URL, restricted to workstudio_db/public
-  prisma/
-    schema.prisma              User, Session, EmailVerificationToken and Role
-    migrations/
-      migration_lock.toml
-      20261029000000_stage1_auth/migration.sql
-  scripts/
-    check-database.ts
-    create-admin.ts            operator-only administrator provisioning
-  src/
-    app.ts / server.ts         middleware, startup, TLS and shutdown
-    config/                    validated environment and database URL
-    controllers/               HTTP handlers
-    db/                        Prisma PostgreSQL adapter
-    middleware/                authentication, roles, email gate, security, errors
-    routes/                    auth, health and administrator session check
-    services/                  authentication, email delivery and profile retrieval
-    types/                     authenticated Express request type
-    utils/                     token hashing and safe error reporting
-    validation/                Zod request schemas
-    generated/prisma/          generated locally; ignored by Git
-  docs/
-    API.md                     endpoint contracts and examples
-    requests.http              manual request examples
-    VERIFICATION.md            performed checks and QA checklist
-```
+**Catalog and availability**
 
-## Install and configure
+- Administrator workspace and tariff management, with logical deletion to preserve history.
+- Separate operational statuses: Free, Occupied, and Unavailable.
+- Interval availability, available-until times, alternative-date suggestions, and optional map coordinates.
+- Configurable facility timezone and weekly opening hours, with UTC timestamp storage.
 
-Use Node.js **24.14 or newer within the 24.x LTS line**. Prisma 7.10.1 is pinned; do not switch to the Prisma 8 release candidate. All runtime dependencies are pinned and the lock file records the complete installation.
+**Bookings and administration**
 
-From the repository root:
+- Single and recurring bookings with atomic conflict checks and database-enforced overlap prevention.
+- Fixed UAH prices per occurrence, calculated and snapshotted on the server.
+- Pending Payment holds, automatic timeout cancellation, private history, and calendar data.
+- Administrator edits, cancellations, and atomic resolution of affected bookings before making a workspace Unavailable.
+- Version checks, idempotent administrator mutations, append-only audit records, and client-owned notifications.
+
+Bookings start as Pending Payment. Payment processing is not integrated, and no API automatically confirms unpaid bookings.
+
+## Prerequisites
+
+- Node.js **24.14.0 or newer within 24.x**, with npm.
+- An existing PostgreSQL database named **workstudio_db**, using the **public** schema.
+- A migration role with schema/table creation permissions and permission to enable the bundled **btree_gist** extension.
+
+The project uses the existing PostgreSQL installation. It does not provision PostgreSQL, database roles, or Docker.
+
+## Installation and environment
+
+Run commands from `backend/`:
 
 ```powershell
 cd backend
 npm ci
-# Only if .env does not already exist:
-Copy-Item .env.example .env
-# Generate a random secret and put its output in JWT_SECRET (do not commit or log it):
+# Preserve an existing local configuration.
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Edit the private `.env` using [.env.example](.env.example) as the configuration reference.
+
+| Setting | Purpose / default |
+| --- | --- |
+| `DATABASE_URL` | Your PostgreSQL connection URL targeting workstudio_db/public |
+| `JWT_SECRET` | A strong random signing secret; replace the example placeholder |
+| `HOST`, `PORT` | Listener address; 127.0.0.1 and 3000 |
+| `PUBLIC_API_URL` | API origin used in confirmation links; http://127.0.0.1:3000 |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins; http://localhost:5173 |
+| `EMAIL_TRANSPORT` | preview for local use, or smtp for delivery |
+| `FACILITY_TIME_ZONE` | Europe/Kyiv |
+| `FACILITY_OPENING_HOURS` | Weekly JSON schedule; daily 08:00-22:00 by default |
+| `BOOKING_HOLD_MINUTES` | Payment hold duration; 15 minutes |
+
+Use your actual database credentials and percent-encode special characters in connection URL credentials. The configuration rejects other database names and non-public schemas.
+
+Generate a signing secret and place its output in JWT_SECRET:
+
+```powershell
 node -e "console.log(require('node:crypto').randomBytes(48).toString('base64url'))"
 ```
 
-A local ignored `.env` was created during implementation with a generated JWT secret and an initially empty `DATABASE_URL`. Preserve any values already configured. Put the actual connection URL in `.env`:
+Keep the opening-hours JSON single-quoted in a dotenv file. Define all seven weekdays; use null for a closed day. Session timeouts, login limits, SMTP, TLS, polling and recurrence settings are documented in .env.example and the [configuration and booking guide](docs/API.md).
 
-```dotenv
-DATABASE_URL=postgresql://YOUR_USER:YOUR_URL_ENCODED_PASSWORD@YOUR_HOST:YOUR_PORT/workstudio_db
-```
+In preview mode, registration/resend returns a development confirmation link; **no email is sent**. For real delivery, configure EMAIL_TRANSPORT=smtp, SMTP_HOST, SMTP_FROM, the provider's port/TLS settings, and credentials where required.
 
-Use the same PostgreSQL host, port, role and password that work in DBeaver. The role needs connection and schema/table creation rights on **workstudio_db**. Do not assume default credentials. Percent-encode special characters in the username/password. The app and Prisma config reject URLs naming another database or a non-public schema. A PostgreSQL DBA/operator must create the database or grant privileges if missing; no database installation, Docker setup, role creation, reset or unrelated-database changes are performed by this project.
-
-Environment variable validation reports field names, never secret values. Missing/invalid database credentials prevent normal server startup. Keep `.env` private and out of Git. Application and Prisma commands must be run from `backend/`.
-
-## Migrations and database connectivity
-
-The initial SQL migration creates `Role`, `User`, `Session`, and `EmailVerificationToken`, unique email/token indexes and user foreign keys. Prisma assigns UUIDs. No workspace, tariff, booking or payment tables are created.
+## Database migrations
 
 ```powershell
 npm run db:validate
@@ -91,67 +91,74 @@ npm run db:status
 npm run db:check
 ```
 
-`db:migrate` uses **prisma migrate deploy**, which applies the committed migration without a shadow database or database reset. It creates Prisma's `_prisma_migrations` tracking table. If the database already contains conflicting tables or existing data, stop and reconcile/baseline the schema with the operator; do not run `migrate reset` or accept destructive reset prompts.
+db:migrate applies the committed migrations with Prisma Migrate Deploy. It does not reset the database or require a shadow database. db:check verifies connectivity, application tables, and the booking exclusion constraint.
 
-Future authorized schema changes should use `npx prisma migrate dev --name DESCRIPTION` in a development database with appropriate shadow-database privileges. Review the generated SQL and commit the schema and migration together. This is not required to apply the existing Stage 1 migration.
+The schema includes users, sessions, email-verification tokens, workspaces, tariffs, bookings, recurring series, audit records, and notifications. In DBeaver, refresh workstudio_db > Schemas > public > Tables after applying migrations.
 
-In **DBeaver**:
+For schema changes, use Prisma migrations and review their SQL. Preserve the custom exclusion constraint, partial indexes and triggers. Do not use db push or a database reset to replace the migration history.
 
-1. Open the existing PostgreSQL connection, or create a PostgreSQL connection using your actual host, port, database `workstudio_db`, username and password.
-2. Test Connection, then connect. After applying the migration, refresh the navigator.
-3. Expand `workstudio_db > Schemas > public > Tables`. Expect `User`, `Session`, `EmailVerificationToken` and `_prisma_migrations`. The `Role` enum is under data types.
-4. Inspect user roles, verification timestamps and session expiry. Treat password/token hashes as sensitive; do not share them in screenshots. Table names are case sensitive in SQL: quote `"User"` and other capitalized names.
+## Run the server
 
-## Start
+Development with automatic reload:
 
 ```powershell
 npm run dev
 ```
 
-Production build and start:
+Compile and run the production build:
 
 ```powershell
 npm run build
 npm start
 ```
 
-The server checks PostgreSQL and the User table before accepting requests. Default development base URL: `http://127.0.0.1:3000/api`. `GET /api/health` returns 200 when PostgreSQL responds and 503 when unavailable after startup. SIGINT/SIGTERM close the listener and database pool.
+The server checks database connectivity and required tables before listening. The reservation worker starts with the server. SIGINT/SIGTERM close the listener, worker and database connection.
 
-## Email verification
+## npm scripts
 
-The selected local setting is `EMAIL_TRANSPORT=preview`. Registration (and resend for an unverified account) returns `emailDelivery.status=development_preview` and `verificationUrl`. **No real email is sent.** Open that URL or submit its token to `POST /api/auth/verify-email`. The preview is returned only in development; it is never written to disk/logs. Anyone with the link can confirm the account, so never use preview mode in a shared/public deployment.
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Run with tsx watch |
+| `npm run build` | Generate Prisma Client and compile TypeScript |
+| `npm start` | Run the compiled server |
+| `npm run typecheck` | Check TypeScript without emitting files |
+| `npm run prisma:generate` | Generate Prisma Client |
+| `npm run db:validate` | Validate the Prisma schema |
+| `npm run db:migrate` | Apply committed migrations |
+| `npm run db:status` | Inspect migration status |
+| `npm run db:check` | Verify database connectivity and schema safeguards |
+| `npm run admin:create` | Provision a new administrator locally |
 
-For actual delivery set `EMAIL_TRANSPORT=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_FROM`, and your provider's `SMTP_USER`/`SMTP_PASSWORD` in the environment. TLS certificates are verified; SMTP requires implicit TLS or STARTTLS. Configure the public API URL so confirmation links reach this backend. SMTP acceptance is reported accurately, not as guaranteed inbox delivery. If sending fails after account creation, registration still returns 201 with `emailDelivery.status=failed`; the account exists and resend can recover it.
+## API and documentation
 
-Tokens expire after 24 hours by default, are single-use, and are stored only as SHA-256 digests. Resending replaces the previous token. Verification sets `emailVerifiedAt` and consumes the token atomically.
+Default local API base URL: **http://127.0.0.1:3000/api**.
 
-## Initial administrator
+- `GET /api/health` checks database reachability.
+- Protected endpoints use `Authorization: Bearer TOKEN`.
+- Requests use JSON; responses use consistent data/error envelopes.
+- Administrator mutations require a UUID Idempotency-Key; updates/deletes also use the current record version.
 
-Only the system operator runs this command locally; there is no public administrator registration or promotion endpoint.
+Detailed contracts and examples:
 
-1. Temporarily set `ADMIN_NAME`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in the ignored `.env` or process environment. Use a strong unique password meeting the registration policy.
+- [REST API reference](docs/API.md)
+- [REST Client request examples](docs/requests.http)
+
+## Administrator provisioning
+
+There is no public administrator registration. The operator provisions a new account using the CLI:
+
+1. Temporarily set ADMIN_NAME, ADMIN_EMAIL, and ADMIN_PASSWORD in the private .env or process environment.
 2. Run `npm run admin:create`.
-3. Remove `ADMIN_PASSWORD` and other provisioning values afterward.
-4. Log in normally, then call `GET /api/admin/session` with its Bearer token.
+3. Remove the provisioning values afterward, especially ADMIN_PASSWORD.
+4. Log in through the normal authentication endpoint.
 
-The script creates a new administrator only. An existing email is refused; an existing client is never promoted or overwritten. Administrators are not falsely marked email-verified: they may request a confirmation link through resend. Email verification does not gate the Stage 1 administrator session check.
+The script refuses an existing email and never promotes or overwrites an existing client. Passwords must contain at least eight characters and fit bcrypt's 72-byte limit. Administrators are not automatically marked email-verified; they can use the resend-verification endpoint.
 
-## HTTPS and deployment
+## Development and security notes
 
-GC-5 and NFR-SEC-01 require HTTPS. The default loopback HTTP URL is a **local development configuration, not an SRS-compliant deployed transport**. For encrypted local operation configure `TLS_CERT_PATH` and `TLS_KEY_PATH`, trust the certificate on the client, and use an HTTPS `PUBLIC_API_URL`.
-
-Production configuration requires `NODE_ENV=production`, SMTP, HTTPS public URL and HTTPS CORS origins, plus either direct TLS certificate/key paths or an HTTPS reverse proxy with an accurately configured `TRUST_PROXY_HOPS`. Production requests recognized as insecure are rejected. A reverse proxy must sanitize forwarded headers; block direct access to the backend port, and use an encrypted/private loopback upstream. Do not enable arbitrary proxy trust. Configure PostgreSQL transport encryption for remote connections. No TLS certificates or production infrastructure are provisioned here.
-
-## React, Android and QA handoff
-
-See [API contracts and examples](docs/API.md), [manual requests](docs/requests.http), and [verification record](docs/VERIFICATION.md).
-
-The React app currently uses demo state in `AuthPage.tsx`/`App.tsx`. Its `services/api.ts` wrapper reads `VITE_API_BASE_URL` but is not wired to those forms. Its stored `ws-demo-user` data has no backend authority. Future frontend work must call these endpoints, add Bearer authorization, handle envelopes/401/403/429, require an 8-character password, implement confirmation feedback, and obtain the current role/profile from the API. No integration was made.
-
-React should keep access tokens in memory for this selected Bearer approach, avoid browser localStorage for sensitive tokens, and sign in again after reload/expiry unless a separate secure storage design is agreed. Android should use platform-protected storage and never logs/backups for tokens. Both applications must call logout before discarding a session token; deleting a local token alone does not invalidate a server session. Do not attach tokens to third-party requests. On 401 show login; on 403 show permission/verification feedback; on 429 respect Retry-After.
-
-Deployment requirements such as automated backups, uptime/recovery targets, formal coverage and performance acceptance remain team/operations work and are not claimed as verified by this foundation.
-
-## Next stage
-
-Stage 2 remains workspace and tariff models, administrator management, operational status, availability queries and tariff retrieval. No Stage 2 schema or endpoints have been added. The later SRS inconsistencies around cancellation/expiration terminology should be clarified before booking/payment stages; Stage 1 does not decide that behavior.
+- Keep .env files, credentials, tokens, node_modules, compiled output and generated Prisma files out of Git. Commit .env.example, package-lock.json, the schema and migrations.
+- Use loopback HTTP only for local development. Production requires HTTPS, SMTP, HTTPS public/CORS origins, and direct TLS or an accurately configured trusted reverse proxy.
+- Store bearer tokens securely and call logout to invalidate a session. Do not log passwords, raw tokens or confirmation links.
+- Expired unpaid holds become CANCELLED with PAYMENT_TIMEOUT; editing or retrying does not extend their original deadline. Clients cannot edit or cancel bookings.
+- Notifications are durable API records, not email or native push delivery. Logical deletion retains booking and audit history.
+- Manual request examples are provided for QA. No automated test framework is configured.
