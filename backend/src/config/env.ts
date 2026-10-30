@@ -5,7 +5,8 @@ import { databaseUrlSchema } from "./database-url.js";
 const optionalText = z.preprocess(value => value === "" ? undefined : value, z.string().optional());
 const integer = (fallback: number, min: number, max: number) => z.coerce.number().int().min(min).max(max).default(fallback);
 const schema = z.object({
-  NODE_ENV: z.enum(["development", "production"]).default("development"),
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  MOCK_PAYMENTS_ENABLED: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
   HOST: z.string().default("127.0.0.1"),
   PORT: integer(3000, 1, 65535),
   DATABASE_URL: databaseUrlSchema,
@@ -54,6 +55,7 @@ const schema = z.object({
     if (!!value.SMTP_USER !== !!value.SMTP_PASSWORD) issue("SMTP_USER", "Supply both SMTP user and password, or neither for a trusted relay.");
   }
   if (value.NODE_ENV === "production") {
+    if (value.MOCK_PAYMENTS_ENABLED) issue("MOCK_PAYMENTS_ENABLED", "Mock payments are forbidden in production.");
     if (value.EMAIL_TRANSPORT !== "smtp") issue("EMAIL_TRANSPORT", "Production requires SMTP.");
     if (publicUrl.protocol !== "https:") issue("PUBLIC_API_URL", "Production requires a public HTTPS URL.");
     if (!value.TLS_CERT_PATH && !value.TRUST_PROXY_HOPS) issue("TLS_CERT_PATH", "Production requires direct TLS or a trusted HTTPS reverse proxy.");

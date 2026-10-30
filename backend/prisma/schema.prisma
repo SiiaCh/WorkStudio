@@ -30,6 +30,7 @@ model User {
   bookingSeries       BookingSeries[]
   auditLogs           AuditLog[]
   notifications       Notification[]
+  payments            Payment[]
 }
 
 model Session {
@@ -99,6 +100,7 @@ model Tariff {
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   bookings  Booking[]
+  payments  Payment[]
 }
 
 model BookingSeries {
@@ -138,6 +140,7 @@ model Booking {
   tariff             Tariff              @relation(fields: [tariffId], references: [id], onDelete: Restrict)
   series             BookingSeries?      @relation(fields: [seriesId], references: [id], onDelete: Restrict)
   notifications      Notification[]
+  payments           Payment[]
 
   @@index([workspaceId, startsAt, endsAt])
   @@index([userId, startsAt])
@@ -174,4 +177,37 @@ model Notification {
   booking   Booking   @relation(fields: [bookingId], references: [id], onDelete: Restrict)
 
   @@index([userId, createdAt])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum PaymentProvider {
+  MOCK
+}
+
+model Payment {
+  id                String          @id @default(uuid()) @db.Uuid
+  bookingId         String          @db.Uuid
+  tariffId          String          @db.Uuid
+  userId            String          @db.Uuid
+  amount            Decimal         @db.Decimal(12, 2)
+  currency          String          @default("UAH") @db.Char(3)
+  provider          PaymentProvider
+  providerReference String?         @unique @db.Uuid
+  status            PaymentStatus   @default(PENDING)
+  idempotencyKey    String          @db.Uuid
+  requestHash       String          @db.Char(64)
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  completedAt       DateTime?       @db.Timestamptz(3)
+  booking           Booking         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  tariff            Tariff          @relation(fields: [tariffId], references: [id], onDelete: Restrict)
+  user              User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, idempotencyKey])
+  @@index([bookingId, createdAt])
+  @@index([tariffId])
 }

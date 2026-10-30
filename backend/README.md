@@ -17,7 +17,7 @@ WorkStudio Backend is the REST API for a coworking workspace reservation and man
 
 - Client registration, email verification and resend, login, and session-specific logout.
 - Client and Administrator roles, protected profiles, inactivity expiry, and failed-login limits.
-- Email verification required before creating bookings.
+- Email verification required before creating bookings or making mock payment attempts.
 
 **Catalog and availability**
 
@@ -34,7 +34,13 @@ WorkStudio Backend is the REST API for a coworking workspace reservation and man
 - Administrator edits, cancellations, and atomic resolution of affected bookings before making a workspace Unavailable.
 - Version checks, idempotent administrator mutations, append-only audit records, and client-owned notifications.
 
-Bookings start as Pending Payment. Payment processing is not integrated, and no API automatically confirms unpaid bookings.
+**Mock payments**
+
+- Explicitly enabled non-production success/failure simulation; no external credentials or real money.
+- Per-occurrence payment records, immutable results, idempotent retries and atomic confirmation.
+- Failed attempts keep the original hold; confirmed bookings retain the interval until completion/cancellation.
+
+Real LiqPay integration is not implemented. Mock operations are disabled by default and forbidden in production.
 
 ## Prerequisites
 
@@ -68,8 +74,9 @@ Edit the private `.env` using [.env.example](.env.example) as the configuration 
 | `FACILITY_TIME_ZONE` | Europe/Kyiv |
 | `FACILITY_OPENING_HOURS` | Weekly JSON schedule; daily 08:00-22:00 by default |
 | `BOOKING_HOLD_MINUTES` | Payment hold duration; 15 minutes |
+| `MOCK_PAYMENTS_ENABLED` | false; set true explicitly for local payment demonstrations |
 
-Use your actual database credentials and percent-encode special characters in connection URL credentials. The configuration rejects other database names and non-public schemas.
+Use your actual database credentials and percent-encode special characters in connection URL credentials. The configuration rejects other database names and non-public schemas. The automated test runner uses a separately generated temporary test database.
 
 Generate a signing secret and place its output in JWT_SECRET:
 
@@ -91,9 +98,9 @@ npm run db:status
 npm run db:check
 ```
 
-db:migrate applies the committed migrations with Prisma Migrate Deploy. It does not reset the database or require a shadow database. db:check verifies connectivity, application tables, and the booking exclusion constraint.
+db:migrate applies the committed migrations with Prisma Migrate Deploy. It does not reset the database or require a shadow database. db:check verifies connectivity, application tables and booking/payment integrity safeguards.
 
-The schema includes users, sessions, email-verification tokens, workspaces, tariffs, bookings, recurring series, audit records, and notifications. In DBeaver, refresh workstudio_db > Schemas > public > Tables after applying migrations.
+The schema includes users, sessions, email-verification tokens, workspaces, tariffs, bookings, recurring series, audit records, notifications, and payment attempts. In DBeaver, refresh workstudio_db > Schemas > public > Tables after applying migrations.
 
 For schema changes, use Prisma migrations and review their SQL. Preserve the custom exclusion constraint, partial indexes and triggers. Do not use db push or a database reset to replace the migration history.
 
@@ -128,6 +135,13 @@ The server checks database connectivity and required tables before listening. Th
 | `npm run db:status` | Inspect migration status |
 | `npm run db:check` | Verify database connectivity and schema safeguards |
 | `npm run admin:create` | Provision a new administrator locally |
+| `npm test` | Migrate a fresh isolated database, run native Node tests, then remove it |
+
+## Automated tests
+
+Run `npm test` from backend/. The configured PostgreSQL role needs CREATEDB permission and permission to enable btree_gist in a new database. The runner creates a randomly named workstudio_test_<32 hex characters> database, applies all migrations, runs TypeScript tests through Node's built-in test runner and tsx, and drops only that database afterward. It never resets, truncates or migrates workstudio_db during testing.
+
+The test application refuses the development database URL. Test configuration uses a separate signing secret and fixture accounts, preview email, mock payments and the documented default facility schedule. Tests exercise real HTTP endpoints, PostgreSQL transactions/constraints, concurrent requests and the expiry worker. If PostgreSQL cannot create the isolated database, the command fails without falling back to development data. An interrupted run may leave the printed test database for manual removal; confirm its exact name before removing it.
 
 ## API and documentation
 
@@ -161,4 +175,4 @@ The script refuses an existing email and never promotes or overwrites an existin
 - Store bearer tokens securely and call logout to invalidate a session. Do not log passwords, raw tokens or confirmation links.
 - Expired unpaid holds become CANCELLED with PAYMENT_TIMEOUT; editing or retrying does not extend their original deadline. Clients cannot edit or cancel bookings.
 - Notifications are durable API records, not email or native push delivery. Logical deletion retains booking and audit history.
-- Manual request examples are provided for QA. No automated test framework is configured.
+- Native Node automated tests and manual request examples cover the API. No additional testing framework is required.

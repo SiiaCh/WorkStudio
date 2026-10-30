@@ -6,7 +6,7 @@ import type { BookingCreate } from "../validation/bookings.js";
 import { activeWhere, bookingOwner, checkWorkspace, notifyBooking, selectedTariff } from "./booking-rules.js";
 import { adminMutation, checkVersion, databaseNow, lockWorkspaces, transaction, type Tx } from "./transactions.js";
 import { refreshLifecycle, settleBookings } from "./lifecycle.js";
-import { bookingView } from "./views.js";
+import { bookingInclude, bookingView } from "./views.js";
 import type { BookingStatus, Prisma } from "../generated/prisma/client.js";
 
 async function createOne(tx: Tx, userId: string, input: BookingCreate) {
@@ -22,7 +22,7 @@ async function createOne(tx: Tx, userId: string, input: BookingCreate) {
     userId, workspaceId: workspace.id, workspaceName: workspace.name, tariffId: tariff.id, tariffName: tariff.name,
     amount: tariff.price, ...interval, createdAt: now,
     paymentDeadline: new Date(now.getTime() + env.BOOKING_HOLD_MINUTES * 60_000),
-  }, include: { series: true } });
+  }, include: bookingInclude });
 }
 export async function createClientBooking(userId: string, input: BookingCreate) {
   const booking = await transaction(tx => createOne(tx, userId, input));
@@ -37,7 +37,7 @@ export function createAdminBooking(actorId: string, key: string, input: BookingC
 }
 export async function getBooking(id: string, userId?: string) {
   await refreshLifecycle();
-  const booking = await prisma.booking.findFirst({ where: { id, ...(userId ? { userId } : {}) }, include: { series: true } });
+  const booking = await prisma.booking.findFirst({ where: { id, ...(userId ? { userId } : {}) }, include: bookingInclude });
   if (!booking) throw new AppError(404, "BOOKING_NOT_FOUND", "The booking does not exist.");
   return { booking: bookingView(booking) };
 }
@@ -60,7 +60,7 @@ export async function listBookings(input: ListInput, ownerId?: string) {
     prisma.booking.count({ where }),
     prisma.booking.findMany({
       where, orderBy: [{ startsAt: ownerId ? "desc" : "asc" }, { id: "asc" }],
-      skip: (input.page - 1) * input.pageSize, take: input.pageSize, include: { series: true },
+      skip: (input.page - 1) * input.pageSize, take: input.pageSize, include: bookingInclude,
     }),
   ], { isolationLevel: "RepeatableRead" });
   return { bookings: bookings.map(bookingView), total, page: input.page, pageSize: input.pageSize, message: total ? null : "No bookings found." };
@@ -75,7 +75,7 @@ export async function calendar(userId: string, input: { fromDate?: string; toDat
   const now = new Date();
   const bookings = await prisma.booking.findMany({
     where: { userId, ...activeWhere(now), endsAt: { gt: now }, startsAt: { gte: localInstant(fromDate, "00:00"), lt: localInstant(addDays(toDate, 1), "00:00") } },
-    orderBy: [{ startsAt: "asc" }, { id: "asc" }], include: { series: true },
+    orderBy: [{ startsAt: "asc" }, { id: "asc" }], include: bookingInclude,
   });
   return { fromDate, toDate, bookings: bookings.map(bookingView), message: bookings.length ? null : "No upcoming bookings found." };
 }
@@ -86,13 +86,14 @@ export function editAdminBooking(actorId: string, key: string, id: string, input
     await lockWorkspaces(tx, [initial.workspaceId, input.workspaceId]);
     const now = await databaseNow(tx);
     await settleBookings(tx, [initial.workspaceId, input.workspaceId], now);
-    const before = await tx.booking.findUniqueOrThrow({ where: { id } });
+    const before = await tx.booking.findUniqueOrThrow({ where: { id }, include: bookingInclude });
+    if (before.workspaceId !== initial.workspaceId) throw new AppError(409, "BOOKING_CHANGED", "The booking moved. Refresh it and retry.");
     checkVersion(before.version, input.version);
     if (!["PENDING_PAYMENT", "CONFIRMED"].includes(before.status)) throw new AppError(409, "BOOKING_TERMINAL", "Completed or cancelled bookings cannot be edited.");
     const interval = bookingInterval(input);
     const workspace = await checkWorkspace(tx, input.workspaceId, interval, now, id);
     const booking = await tx.booking.update({
-      where: { id }, data: { workspaceId: workspace.id, workspaceName: workspace.name, ...interval, version: { increment: 1 } }, include: { series: true },
+      where: { id }, data: { workspaceId: workspace.id, workspaceName: workspace.name, ...interval, version: { increment: 1 } }, include: bookingInclude,
     });
     await notifyBooking(tx, booking, "BOOKING_UPDATED", "An administrator changed your booking. Review its workspace and times.");
     return { result: { booking: bookingView(booking) }, action: "BOOKING_UPDATED", resourceType: "Booking", resourceId: id, details: { before: bookingView(before), after: bookingView(booking) } };
@@ -105,10 +106,11 @@ export function cancelAdminBooking(actorId: string, key: string, id: string, ver
     await lockWorkspaces(tx, [initial.workspaceId]);
     const now = await databaseNow(tx);
     await settleBookings(tx, [initial.workspaceId], now);
-    const before = await tx.booking.findUniqueOrThrow({ where: { id } });
+    const before = await tx.booking.findUniqueOrThrow({ where: { id }, include: bookingInclude });
+    if (before.workspaceId !== initial.workspaceId) throw new AppError(409, "BOOKING_CHANGED", "The booking moved. Refresh it and retry.");
     checkVersion(before.version, version);
     if (!["PENDING_PAYMENT", "CONFIRMED"].includes(before.status)) throw new AppError(409, "BOOKING_TERMINAL", "The booking is already completed or cancelled.");
-    const booking = await tx.booking.update({ where: { id }, data: { status: "CANCELLED", cancellationReason: "ADMINISTRATOR", version: { increment: 1 } }, include: { series: true } });
+    const booking = await tx.booking.update({ where: { id }, data: { status: "CANCELLED", cancellationReason: "ADMINISTRATOR", version: { increment: 1 } }, include: bookingInclude });
     await notifyBooking(tx, booking, "BOOKING_CANCELLED", "An administrator cancelled your booking. Any refund is handled by the coworking operator outside this system.");
     return { result: { booking: bookingView(booking) }, action: "BOOKING_CANCELLED", resourceType: "Booking", resourceId: id, details: { before: bookingView(before), after: bookingView(booking) } };
   });

@@ -5,7 +5,7 @@ import type { RecurringInput } from "../validation/bookings.js";
 import { alternativesFor, blockedReason, bookingOwner, conflictSnapshot, selectedTariff } from "./booking-rules.js";
 import { databaseNow, lockWorkspaces, transaction, type Tx } from "./transactions.js";
 import { settleBookings } from "./lifecycle.js";
-import { bookingView } from "./views.js";
+import { bookingInclude, bookingView } from "./views.js";
 
 function occurrences(input: RecurringInput) {
   const span = (new Date(input.toDate).getTime() - new Date(input.fromDate).getTime()) / 86400_000;
@@ -72,7 +72,7 @@ export async function createSeries(userId: string, input: RecurringInput) {
       startsAt: item.startsAt, endsAt: item.endsAt, createdAt: now,
       paymentDeadline: new Date(now.getTime() + env.BOOKING_HOLD_MINUTES * 60_000),
     })) });
-    const bookings = await tx.booking.findMany({ where: { seriesId: series.id }, orderBy: { startsAt: "asc" }, include: { series: true } });
+    const bookings = await tx.booking.findMany({ where: { seriesId: series.id }, orderBy: { startsAt: "asc" }, include: bookingInclude });
     if (bookings.length !== items.length) throw new Error("Incomplete recurring series");
     return { series, bookings: bookings.map(bookingView), totalAmount: assessment.tariff.price.mul(items.length).toFixed(2), currency: "UAH" };
   });

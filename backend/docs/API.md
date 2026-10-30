@@ -125,7 +125,7 @@ Reusing that token on any protected endpoint then returns 401 `UNAUTHENTICATED`,
 
 ## Health and common errors
 
-`GET /api/health`: 200 `{"data":{"status":"ok","database":"reachable"}}`. Once running, loss of database connectivity returns 503 `DATABASE_UNAVAILABLE`. Normal server startup checks database connectivity and the User and Booking tables.
+`GET /api/health`: 200 `{"data":{"status":"ok","database":"reachable"}}`. Once running, loss of database connectivity returns 503 `DATABASE_UNAVAILABLE`. Normal server startup checks database connectivity and the User, Booking and Payment tables.
 
 - 400: field validation, invalid JSON, invalid/expired verification token, or insecure production transport.
 - 401: invalid credentials, missing/invalid/inactive token.
@@ -212,21 +212,23 @@ The sweep interval must be 100-1000 ms. MAX_RECURRING_OCCURRENCES is a configura
 | Booking | Client/workspace/tariff references, UTC interval, saved names/price, status, immutable hold deadline, cancellation reason, optional series, version |
 | BookingSeries | Client, weekdays (Monday=1 through Sunday=7), date period and local occurrence times |
 | AuditLog | Administrator/action/resource/timestamp/details, with optional idempotency request hash and original result |
-| Notification | Durable client-owned booking-change notification and read timestamp |
+| Notification | Durable client-owned booking/payment event and read timestamp |
+| Payment | Per-booking attempt, saved tariff/amount, MOCK provider/reference, PENDING/SUCCEEDED/FAILED result, completion time and client-scoped operation key |
 
-These models reference User records. Payment records are not implemented.
+These models reference User records. Payment attempts reference an existing booking, tariff and client, store the snapshotted amount/currency/provider, and retain immutable completed results and idempotency metadata.
 
 Database safeguards include:
 
 - Case-insensitive unique names among non-deleted workspaces/tariffs, positive prices, interval and map-coordinate checks, foreign keys and query indexes.
 - A PostgreSQL GiST exclusion constraint on workspaceId and the half-open UTC interval `[startsAt, endsAt)`, applying to PENDING_PAYMENT and CONFIRMED. Adjacent bookings are valid; overlapping active rows are rejected even if a writer bypasses the service.
 - A trigger protecting the original tariff/price snapshot, creation time and payment deadline from later mutation. Edits never extend the payment hold.
-- Terminal-status and permitted-transition checks; Cancelled bookings require a reason.
+- Terminal-status and permitted-transition checks; Cancelled bookings require a reason. Pending-to-Confirmed additionally requires a successful payment before the original deadline.
+- Unique successful payment per booking, immutable completed payment records, and booking/tariff/owner/amount consistency checks.
 - Triggers rejecting audit UPDATE, DELETE and TRUNCATE. No audit mutation endpoint exists. Production database-role/owner privileges still need appropriate operational management; these triggers are not a claim of protection from a database superuser.
 
 Custom exclusion constraints, partial expression indexes and triggers are intentionally recorded in SQL rather than Prisma schema syntax. Preserve them when reviewing future migrations; do not replace migrations with db push.
 
-Deletion is logical: deleted items disappear from the catalog and cannot be selected for new bookings, while foreign keys/history remain intact. Workspace deletion is refused while current/upcoming active bookings exist. Deleting an unused item permits reuse of its name. Payment records are not implemented; when payment processing is introduced, its reference check must prevent deletion of a tariff used by any payment, as required by FR-WTM-09. Logical deletion already preserves the referenced row.
+Deletion is logical: deleted items disappear from the catalog and cannot be selected for new bookings, while foreign keys/history remain intact. Workspace deletion is refused while current/upcoming active bookings exist. Deleting an unused item permits reuse of its name. A tariff referenced by any payment attempt, including a failed attempt, cannot be deleted (409 TARIFF_HAS_PAYMENTS). An existing pending booking can still pay its saved amount after a tariff was logically deleted before any attempt existed; the referenced tariff row is retained.
 
 ## Administrator mutations and concurrency
 
@@ -267,6 +269,8 @@ All paths below are relative to `/api`.
 | GET | /bookings/history | Client, own records only |
 | GET | /bookings/calendar | Client, own current/upcoming active records |
 | GET | /bookings/:id | Client, own record only; another client's reference returns 404 |
+| GET | /bookings/:id/payments | Client, own booking attempts only |
+| POST | /bookings/:id/mock-payments | Email-verified Client, own eligible booking, key; explicit non-production opt-in |
 | GET | /admin/bookings | Administrator; filtered/paginated list |
 | GET | /admin/bookings/:id | Administrator |
 | POST | /admin/bookings | Administrator, key; selected owner must be an email-verified Client |
@@ -275,7 +279,7 @@ All paths below are relative to `/api`.
 | GET | /notifications | Client, own notifications |
 | POST | /notifications/:id/read | Client, own notification; JSON {} |
 
-There is no public administrator provisioning, client cancellation/edit, or booking-confirmation endpoint. There is no price or status field accepted from the client when creating a booking.
+There is no public administrator provisioning, client cancellation/edit, or direct booking-status assignment endpoint. There is no price or status field accepted from the client when creating a booking.
 
 ## Catalog and map-data examples
 
@@ -347,7 +351,7 @@ POST /bookings:
 
 201 returns `data.booking` with id/reference, userId, workspaceId/workspaceName, tariffId/tariffName, amount, currency=UAH, date/startTime/endTime/timeZone, startsAt/endsAt (UTC), status=PENDING_PAYMENT, paymentDeadline, cancellationReason=null, version, timestamps and series information.
 
-`paymentStatus=null` and `paymentIntegrationAvailable=false` explicitly mean there is no payment attempt/provider integration. No payment success is simulated.
+`paymentStatus` is null before any attempt. With the explicit mock configuration enabled, `paymentIntegrationAvailable=true` and `paymentProvider="MOCK"`; otherwise operations are disabled. The latest attempt status is reflected in booking responses. See Mock payments below.
 
 The owner comes from the authenticated session. Unknown fields such as userId, amount, total, role, paymentStatus or status are rejected. The selected workspace and tariff must still exist in the catalog; the interval must be future, within opening hours and conflict-free. Identity/verification is rechecked in the transaction. Adjacent intervals are allowed.
 
@@ -356,11 +360,11 @@ The owner comes from the authenticated session. Unknown fields such as userId, a
 | New client/admin booking -> PENDING_PAYMENT | Implemented; reserves immediately |
 | PENDING_PAYMENT -> CANCELLED / PAYMENT_TIMEOUT | Implemented; deadline reached, interval released |
 | PENDING_PAYMENT or CONFIRMED -> CANCELLED / ADMINISTRATOR | Implemented administrator action; history retained, notification written |
-| CONFIRMED -> COMPLETED | Lifecycle worker supports this after endsAt; no API produces Confirmed yet |
-| PENDING_PAYMENT -> CONFIRMED | Deferred until a verified successful LiqPay payment |
+| CONFIRMED -> COMPLETED | Lifecycle worker applies this after endsAt and writes a notification |
+| PENDING_PAYMENT -> CONFIRMED | Atomic successful mock attempt, explicitly enabled outside production |
 | CANCELLED or COMPLETED -> active | Forbidden; create a new booking through a new availability check |
 
-By default, the worker runs every second, with an immediate sweep on startup, and safely settles expired holds and ended Confirmed bookings. Availability ignores an expired hold immediately, even before cleanup. Booking transactions clean up expired holds under the workspace lock before inserting a replacement. History/detail/calendar reads also refresh lifecycle state. Deadlines are fixed at creation and are not extended by editing or retries. Operational workspace status is never automatically changed by booking or expiry.
+By default, the worker runs every second, with an immediate sweep on startup, and safely settles expired holds and ended Confirmed bookings, with one durable notification per transition. Availability ignores an expired hold immediately, even before cleanup. Booking transactions clean up expired holds under the workspace lock before inserting a replacement. History/detail/calendar reads also refresh lifecycle state. Deadlines are fixed at creation and are not extended by editing or retries. Operational workspace status is never automatically changed by booking or expiry.
 
 PATCH /admin/bookings/:id requires the full replacement workspace/date/time plus version and confirm=true. It ignores the booking itself when checking overlaps, preserves owner, price and deadline, and rejects terminal bookings. Moving an already ongoing booking to resolve workspace unavailability preserves its original interval; it is not a general ability to create a past booking.
 
@@ -416,7 +420,7 @@ If conflicts exist, change the settings or explicitly accept an alternative for 
 {"alternatives":[{"date":"2026-11-04","workspaceId":"ALTERNATIVE_UUID"}],"confirm":true}
 ```
 
-Submit the full input plus accepted alternatives and confirm=true to POST /bookings/recurring. The server rechecks every date/workspace inside one transaction; it never automatically accepts a suggested alternative. Any conflict returns 409 RECURRING_CONFLICT with dates/options and creates no series/occurrences. Success returns series, all occurrences, totalAmount and UAH. Each occurrence has its own booking/reference/price snapshot and the same initial hold deadline, appears in history/calendar, and starts Pending Payment. Series payment and automatic confirmation are not implemented.
+Submit the full input plus accepted alternatives and confirm=true to POST /bookings/recurring. The server rechecks every date/workspace inside one transaction; it never automatically accepts a suggested alternative. Any conflict returns 409 RECURRING_CONFLICT with dates/options and creates no series/occurrences. Success returns series, all occurrences, totalAmount and UAH. Each occurrence has its own booking/reference/price snapshot and the same initial hold deadline, appears in history/calendar, and starts Pending Payment. Pay occurrences individually through the mock payment endpoint; series-wide payment and automatic confirmation are not implemented.
 
 ## Catalog and booking error codes
 
@@ -426,16 +430,104 @@ Submit the full input plus accepted alternatives and confirm=true to POST /booki
 | 401 | Existing UNAUTHENTICATED / INVALID_CREDENTIALS behavior |
 | 403 | FORBIDDEN, EMAIL_NOT_VERIFIED |
 | 404 | WORKSPACE_NOT_FOUND, TARIFF_NOT_FOUND, BOOKING_NOT_FOUND, CLIENT_NOT_FOUND, NOTIFICATION_NOT_FOUND |
-| 409 | NAME_ALREADY_EXISTS, BOOKING_CONFLICT, WORKSPACE_UNAVAILABLE, WORKSPACE_OCCUPIED_NOW, VERSION_CONFLICT, IDEMPOTENCY_KEY_REUSED, WORKSPACE_HAS_BOOKINGS, UNRESOLVED_BOOKINGS, RECURRING_CONFLICT, BOOKING_TERMINAL, RESOURCE_IN_USE |
+| 409 | NAME_ALREADY_EXISTS, BOOKING_CONFLICT, WORKSPACE_UNAVAILABLE, WORKSPACE_OCCUPIED_NOW, VERSION_CONFLICT, IDEMPOTENCY_KEY_REUSED, WORKSPACE_HAS_BOOKINGS, UNRESOLVED_BOOKINGS, RECURRING_CONFLICT, BOOKING_TERMINAL, RESOURCE_IN_USE, TARIFF_HAS_PAYMENTS, BOOKING_CHANGED |
 | 413/415/429 | Existing JSON-size, media-type and rate-limit errors |
 | 503 | RESOURCE_BUSY with Retry-After; health retains DATABASE_UNAVAILABLE |
 
 A missing/malformed Idempotency-Key is a 400 validation error. Availability uses the unavailableReason values WORKSPACE_UNAVAILABLE, WORKSPACE_OCCUPIED_NOW, BOOKING_CONFLICT, FACILITY_CLOSED or INTERVAL_IN_PAST rather than failing the entire catalog query for an unavailable individual desk.
 
-## Payment integration boundary
+## Mock payments
 
-Payment processing and Payment records are not implemented. The API returns paymentStatus=null and paymentIntegrationAvailable=false; it does not produce successful-payment confirmations.
+Mock payments are an explicit educational/demo substitute for the SRS LiqPay flow. They do not contact LiqPay, accept card data, transfer money, or establish real payment evidence.
 
-A future LiqPay integration must use the saved booking amount, verify signed notifications, process duplicates idempotently, allow retries only before the original payment deadline, and reconcile late notifications against terminal/cancelled holds. Only a verified successful payment may change Pending Payment to Confirmed. Expired or cancelled slots must not be silently resurrected. Payment-backed tariff deletion checks and recurring-series settlement semantics must be added with that integration. Refunds remain the operator's responsibility outside the application.
+Set `MOCK_PAYMENTS_ENABLED=true` in the private .env and restart the server. The default is false. The mutation route is mounted only in development/test; production configuration with this flag enabled fails startup. Production cannot use mock payments. Payment-history reads remain available regardless of this flag.
 
-For setup and administrator provisioning, see [README](../README.md). For runnable request examples, see [requests.http](requests.http).
+### Simulate an attempt
+
+`POST /api/bookings/:id/mock-payments`
+
+Requires an active **email-verified Client** session, ownership of the booking, JSON content type, and `Idempotency-Key: UUID`.
+
+```http
+POST /api/bookings/BOOKING_UUID/mock-payments
+Authorization: Bearer CLIENT_TOKEN
+Content-Type: application/json
+Idempotency-Key: 9d9a8210-499d-4430-9a9a-5b8127a00591
+
+{"scenario":"success"}
+```
+
+Use `{"scenario":"failure"}` to simulate a declined attempt. Scenario is a mock-provider instruction; the server provider produces the stored result. Unknown fields are rejected. Never send amount, currency, userId, tariffId, status, card details or a provider transaction identifier. Amount/tariff/owner come from the saved booking, even after a tariff price change or logical deletion.
+
+200 for a simulated success:
+
+```json
+{
+  "data": {
+    "payment": {
+      "id": "PAYMENT_UUID",
+      "bookingId": "BOOKING_UUID",
+      "tariffId": "TARIFF_UUID",
+      "amount": "150.00",
+      "currency": "UAH",
+      "provider": "MOCK",
+      "providerReference": "SERVER_GENERATED_UUID",
+      "status": "SUCCEEDED",
+      "createdAt": "2026-10-30T10:00:00.000Z",
+      "completedAt": "2026-10-30T10:00:00.010Z"
+    },
+    "booking": {"id":"BOOKING_UUID","status":"CONFIRMED"}
+  }
+}
+```
+
+For failure, payment.status is FAILED and booking.status is PENDING_PAYMENT. Both results return HTTP 200 because the simulation completed; use payment.status to display success/failure. A failed attempt leaves the hold, price and original deadline unchanged. Retry with a **new** operation key before that deadline.
+
+An eligible booking is owned by the caller, PENDING_PAYMENT, before its original paymentDeadline, and has not ended. Expired, Cancelled, Completed or already Confirmed bookings reject **new** attempts. Another owner's reference returns 404. A successful attempt saves the payment result, changes the booking to CONFIRMED, increments its version, and creates PAYMENT_SUCCEEDED notification in one transaction. Failure stores FAILED and creates PAYMENT_FAILED without modifying the booking/version. An initial PENDING payment record is finalized inside the same transaction; partially applied mock results are rolled back.
+
+Reuse the same key for a network retry of the **same booking and scenario**. Simultaneous identical requests return the same original result and create one payment/notification. A key is scoped to the authenticated client across payment requests; changing booking or scenario with that key returns 409 IDEMPOTENCY_KEY_REUSED. A new key against a paid booking returns 409 BOOKING_NOT_PAYABLE. Even if the booking was later cancelled/completed, replay returns the original attempt result without restoring or modifying it. The response's booking status describes the original attempt: GET the booking afterward for its current state/version.
+
+Concurrent distinct success attempts have at most one winner. Payment, expiry, booking edits/cancellation and workspace reassignment serialize under the existing workspace locks; eligibility is checked after waiting. A database unique index independently permits only one successful payment per booking. Cancellation never erases payment evidence or changes SUCCEEDED to FAILED. Refunds are outside this mock implementation.
+
+### Payment history and booking fields
+
+`GET /api/bookings/:id/payments` requires a Client session and returns only the caller's owned booking attempts, newest first:
+
+```json
+{"data":{"payments":[{"id":"PAYMENT_UUID","bookingId":"BOOKING_UUID","tariffId":"TARIFF_UUID","amount":"150.00","currency":"UAH","provider":"MOCK","providerReference":"SERVER_GENERATED_UUID","status":"FAILED","createdAt":"2026-10-30T10:00:00.000Z","completedAt":"2026-10-30T10:00:00.010Z"}]}}
+```
+
+No attempts returns an empty array. Raw request hashes and idempotency keys are never exposed.
+
+Booking detail, history, calendar, and administrator responses expose:
+
+- `paymentStatus`: null when no attempt exists, otherwise the latest PENDING, SUCCEEDED or FAILED result. Failed attempts can be retried; a Cancelled/Completed booking can retain SUCCEEDED history.
+- `paymentIntegrationAvailable`: whether mock operations are enabled in this running non-production API.
+- `paymentProvider`: MOCK for a recorded attempt or enabled mock integration, otherwise null.
+
+These fields supplement the existing contract; booking status and payment status are separate. A payment can succeed while the booking is subsequently cancelled by an administrator. No automatic refund or real payment receipt is produced.
+
+Each recurring occurrence is a separate booking with its own amount/deadline and payment attempts. Pay each occurrence ID separately with its own key. There is no series-wide charge or automatic confirmation of other occurrences. One failed/expired occurrence does not change paid occurrences.
+
+### Payment errors
+
+| HTTP | Code | Meaning / client action |
+| --- | --- | --- |
+| 400 | VALIDATION_ERROR | Invalid scenario, unknown fields, or missing/malformed UUID key |
+| 401 | UNAUTHENTICATED | Sign in again |
+| 403 | FORBIDDEN / EMAIL_NOT_VERIFIED | Client role and verified email required |
+| 404 | NOT_FOUND | Mock mutation disabled or unavailable |
+| 404 | BOOKING_NOT_FOUND | Unknown booking or another client's reference |
+| 409 | PAYMENT_WINDOW_EXPIRED | Hold cancelled with PAYMENT_TIMEOUT; create a new booking |
+| 409 | BOOKING_NOT_PAYABLE | Booking is no longer eligible; GET current status |
+| 409 | IDEMPOTENCY_KEY_REUSED | Use a new key for a genuinely different attempt |
+| 409 | BOOKING_CHANGED | Workspace moved during the request; refresh and retry |
+| 503 | RESOURCE_BUSY | Retry the same request/key after Retry-After |
+
+## Payment integration boundary and remaining scope
+
+The mock provider is isolated from API validation and booking transactions. Real LiqPay requests, signed callbacks, asynchronous pending/reconciliation, external transaction identifiers, retries across provider outages and late-payment reconciliation are not implemented. A later real integration must preserve server price snapshots, provider authentication, idempotency, atomic booking confirmation, immutable completed results, original hold deadlines and terminal booking guards. An expired/cancelled slot must never be reopened by a late notification.
+
+This release does not implement client editing/cancellation, real refunds, meeting-room management, client analytics, Google integrations, email/native push notifications, or backup/restore automation. HTTPS deployment, operator-managed backups/retention, external-service integration and load/acceptance testing remain operational work. The API's durable notification events include BOOKING_CREATED (administrator creation), BOOKING_UPDATED, BOOKING_CANCELLED, BOOKING_REASSIGNED, BOOKING_EXPIRED, BOOKING_COMPLETED, PAYMENT_SUCCEEDED and PAYMENT_FAILED.
+
+For setup, isolated automated testing and administrator provisioning, see [README](../README.md). For runnable request examples, see [requests.http](requests.http).

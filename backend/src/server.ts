@@ -11,6 +11,7 @@ async function main() {
   await prisma.$connect();
   await prisma.$queryRaw`SELECT 1 FROM "User" LIMIT 1`;
   await prisma.$queryRaw`SELECT 1 FROM "Booking" LIMIT 1`;
+  await prisma.$queryRaw`SELECT 1 FROM "Payment" LIMIT 1`;
   const stopWorker = startReservationWorker();
   const server = env.TLS_CERT_PATH && env.TLS_KEY_PATH
     ? httpsServer({ cert: readFileSync(env.TLS_CERT_PATH), key: readFileSync(env.TLS_KEY_PATH), minVersion: "TLSv1.2" }, app)
@@ -20,6 +21,7 @@ async function main() {
   server.on("error", error => { logFailure("server_failed", error); process.exitCode = 1; void stopWorker().then(() => prisma.$disconnect()); });
   server.listen(env.PORT, env.HOST, () => {
     console.info("WorkStudio API listening on port " + env.PORT + " (" + env.NODE_ENV + ").");
+    if (env.MOCK_PAYMENTS_ENABLED) console.info("Mock payments enabled: simulated results only; no money is processed.");
     if (env.EMAIL_TRANSPORT === "preview") console.info("Development email preview enabled: no email will be sent.");
   });
   function shutdown() {

@@ -74,7 +74,7 @@ export function deleteTariff(actorId: string, key: string, id: string, version: 
     const tariff = await tx.tariff.findFirst({ where: { id, deletedAt: null } });
     if (!tariff) throw new AppError(404, "TARIFF_NOT_FOUND", "The tariff does not exist.");
     checkVersion(tariff.version, version);
-    // Logical deletion preserves references/snapshots. Payment-reference checks are added with the Payment model.
+    if (await tx.payment.count({ where: { tariffId: id } })) throw new AppError(409, "TARIFF_HAS_PAYMENTS", "A tariff referenced by a payment cannot be deleted.");
     await tx.tariff.update({ where: { id }, data: { deletedAt: new Date(), version: { increment: 1 } } });
     return { result: { id, deleted: true }, action: "TARIFF_DELETED", resourceType: "Tariff", resourceId: id, details: { before: tariffView(tariff) } };
   });

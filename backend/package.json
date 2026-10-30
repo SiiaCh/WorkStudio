@@ -16,7 +16,8 @@
     "db:migrate": "prisma migrate deploy",
     "db:status": "prisma migrate status",
     "db:check": "tsx scripts/check-database.ts",
-    "admin:create": "tsx scripts/create-admin.ts"
+    "admin:create": "tsx scripts/create-admin.ts",
+    "test": "tsx scripts/run-tests.ts"
   },
   "dependencies": {
     "@prisma/client": "7.10.1",

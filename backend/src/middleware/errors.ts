@@ -31,6 +31,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
     problem = isRegistration
       ? new AppError(409, "EMAIL_ALREADY_REGISTERED", "This email address is already registered.")
       : new AppError(409, "NAME_ALREADY_EXISTS", "An active workspace or tariff already has this name.");
+  } else if (state === "23514" && req.originalUrl.split("?")[0]?.replace(/\/$/, "").endsWith("/mock-payments")) {
+    problem = new AppError(409, "BOOKING_NOT_PAYABLE", "Payment eligibility changed. Refresh the booking before retrying.");
   } else if (state === "23P01") {
     problem = new AppError(409, "BOOKING_CONFLICT", "The interval conflicts with another active booking. Refresh availability and try again.");
   } else if (["55P03", "40P01", "40001"].includes(state ?? "") || error?.code === "P2034" || error?.code === "P2028") {

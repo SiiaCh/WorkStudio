@@ -205,7 +205,7 @@ Content-Type: application/json
 
 {"version":{{recordVersion}},"confirm":true}
 
-### Administrator: logically delete tariff, preserving booking snapshots
+### Administrator: logically delete tariff (409 if any payment references it)
 DELETE {{base}}/admin/tariffs/{{tariffId}}
 Authorization: Bearer {{adminToken}}
 Idempotency-Key: {{$guid}}
@@ -223,3 +223,34 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {}
+
+### Mock payments: explicit MOCK_PAYMENTS_ENABLED=true; restart first
+# Use an OWN Pending Payment booking before its original deadline.
+# Scenario selects a simulation only. Never submit card details, price or status.
+# Keep the same UUID for a network retry; change it for a NEW attempt.
+@paymentKey = 9d9a8210-499d-4430-9a9a-5b8127a00591
+
+### Simulate failure: 200 FAILED; booking remains Pending Payment
+POST {{base}}/bookings/{{bookingId}}/mock-payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"scenario":"failure"}
+
+### Simulate success: 200 SUCCEEDED and atomic confirmation
+# Repeating this SAME request/key returns the original result without charging/confirming again.
+POST {{base}}/bookings/{{bookingId}}/mock-payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{paymentKey}}
+Content-Type: application/json
+
+{"scenario":"success"}
+
+### Read current booking/version after a payment response or retry
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Own payment attempts, newest first (other client's booking returns 404)
+GET {{base}}/bookings/{{bookingId}}/payments
+Authorization: Bearer {{token}}

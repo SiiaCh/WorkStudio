@@ -1,3 +1,5 @@
+import { env } from "../config/env.js";
+import * as payments from "../controllers/payments.js";
 import { Router } from "express";
 import * as controller from "../controllers/bookings.js";
 import { authenticate, requireRole, requireVerifiedEmail } from "../middleware/auth.js";
@@ -10,6 +12,8 @@ bookingRouter.get("/calendar", controller.calendar);
 bookingRouter.post("/recurring/preview", controller.recurringPreview);
 bookingRouter.post("/recurring", requireVerifiedEmail, controller.recurringCreate);
 bookingRouter.post("/", requireVerifiedEmail, controller.create);
+bookingRouter.get("/:id/payments", payments.history);
+if (env.MOCK_PAYMENTS_ENABLED && env.NODE_ENV !== "production") bookingRouter.post("/:id/mock-payments", requireVerifiedEmail, payments.simulate);
 bookingRouter.get("/:id", controller.detail);
 
 export const adminBookingRouter = Router();

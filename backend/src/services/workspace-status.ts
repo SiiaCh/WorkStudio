@@ -3,12 +3,12 @@ import type { StatusInput } from "../validation/catalog.js";
 import { adminMutation, appendAudit, checkVersion, databaseNow, lockWorkspaces, transaction, type Tx } from "./transactions.js";
 import { settleBookings } from "./lifecycle.js";
 import { alternativesFor, checkWorkspace, conflictSnapshot, notifyBooking } from "./booking-rules.js";
-import { bookingView, workspaceView } from "./views.js";
+import { bookingInclude, bookingView, workspaceView } from "./views.js";
 
 async function affected(tx: Tx, workspaceId: string, now: Date) {
   return tx.booking.findMany({
     where: { workspaceId, status: { in: ["PENDING_PAYMENT", "CONFIRMED"] }, endsAt: { gt: now } },
-    orderBy: [{ startsAt: "asc" }, { id: "asc" }], include: { series: true },
+    orderBy: [{ startsAt: "asc" }, { id: "asc" }], include: bookingInclude,
   });
 }
 async function proposals(tx: Tx, workspaceId: string, bookings: Awaited<ReturnType<typeof affected>>, now: Date) {
@@ -53,12 +53,12 @@ export function changeWorkspaceStatus(actorId: string, key: string, id: string, 
         const resolution = input.resolutions.find(item => item.bookingId === booking.id)!;
         let updated;
         if (resolution.action === "CANCEL") {
-          updated = await tx.booking.update({ where: { id: booking.id }, data: { status: "CANCELLED", cancellationReason: "ADMINISTRATOR", version: { increment: 1 } }, include: { series: true } });
+          updated = await tx.booking.update({ where: { id: booking.id }, data: { status: "CANCELLED", cancellationReason: "ADMINISTRATOR", version: { increment: 1 } }, include: bookingInclude });
           await notifyBooking(tx, updated, "BOOKING_CANCELLED", "An administrator cancelled your booking because its workspace is unavailable. Contact the operator about any refund.");
         } else {
           if (resolution.workspaceId === id) throw new AppError(400, "INVALID_REASSIGNMENT", "Select a different workspace.");
           const target = await checkWorkspace(tx, resolution.workspaceId, booking, now, booking.id);
-          updated = await tx.booking.update({ where: { id: booking.id }, data: { workspaceId: target.id, workspaceName: target.name, version: { increment: 1 } }, include: { series: true } });
+          updated = await tx.booking.update({ where: { id: booking.id }, data: { workspaceId: target.id, workspaceName: target.name, version: { increment: 1 } }, include: bookingInclude });
           await notifyBooking(tx, updated, "BOOKING_REASSIGNED", "An administrator moved your booking to another workspace. Its times and saved price are unchanged.");
         }
         await appendAudit(tx, actorId, resolution.action === "CANCEL" ? "BOOKING_CANCELLED" : "BOOKING_REASSIGNED", "Booking", booking.id, { before: bookingView(booking), after: bookingView(updated) });

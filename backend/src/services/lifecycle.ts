@@ -5,14 +5,19 @@ import { databaseNow, lockWorkspaces, transaction, type Tx } from "./transaction
 
 export async function settleBookings(tx: Tx, workspaceIds: string[], now: Date) {
   if (!workspaceIds.length) return;
-  await tx.booking.updateMany({
+  const expired = await tx.booking.updateManyAndReturn({
     where: { workspaceId: { in: workspaceIds }, status: "PENDING_PAYMENT", paymentDeadline: { lte: now } },
     data: { status: "CANCELLED", cancellationReason: "PAYMENT_TIMEOUT", version: { increment: 1 } },
   });
-  await tx.booking.updateMany({
+  const completed = await tx.booking.updateManyAndReturn({
     where: { workspaceId: { in: workspaceIds }, status: "CONFIRMED", endsAt: { lte: now } },
     data: { status: "COMPLETED", version: { increment: 1 } },
   });
+  const notifications = [
+    ...expired.map(booking => ({ userId: booking.userId, bookingId: booking.id, event: "BOOKING_EXPIRED", message: "Your unpaid booking expired and its interval was released." })),
+    ...completed.map(booking => ({ userId: booking.userId, bookingId: booking.id, event: "BOOKING_COMPLETED", message: "Your confirmed booking has completed." })),
+  ];
+  if (notifications.length) await tx.notification.createMany({ data: notifications });
 }
 export async function refreshLifecycle() {
   const now = new Date();
