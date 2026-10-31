@@ -56,7 +56,6 @@ const schema = z.object({
   }
   if (value.NODE_ENV === "production") {
     if (value.MOCK_PAYMENTS_ENABLED) issue("MOCK_PAYMENTS_ENABLED", "Mock payments are forbidden in production.");
-    if (value.EMAIL_TRANSPORT !== "smtp") issue("EMAIL_TRANSPORT", "Production requires SMTP.");
     if (publicUrl.protocol !== "https:") issue("PUBLIC_API_URL", "Production requires a public HTTPS URL.");
     if (!value.TLS_CERT_PATH && !value.TRUST_PROXY_HOPS) issue("TLS_CERT_PATH", "Production requires direct TLS or a trusted HTTPS reverse proxy.");
   } else if (!value.TLS_CERT_PATH && !["127.0.0.1", "::1", "localhost"].includes(value.HOST)) {
