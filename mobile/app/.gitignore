@@ -1,1 +1,17 @@
-/build
+# WorkStudio Android client - keep local and generated files out of Git
+.gradle/
+**/build/
+.idea/
+.kotlin/
+*.iml
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+.env
+.env.*
+captures/
+.DS_Store
+.externalNativeBuild/
+.cxx/

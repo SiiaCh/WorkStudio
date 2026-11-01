@@ -7,7 +7,10 @@ import java.net.URLEncoder
 
 /** Local development backend. Emulator connects using `adb reverse tcp:3000 tcp:3000`. */
 internal object StudioApi {
-    private const val ROOT = "http://127.0.0.1:3000/api"
+
+
+    internal val ROOT = "https://workstudio-api.onrender.com/api"
+
 
     class ApiException(val status: Int, val code: String, override val message: String) : Exception(message)
 

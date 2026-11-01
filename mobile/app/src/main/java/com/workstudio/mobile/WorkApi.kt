@@ -7,7 +7,9 @@ import java.net.URL
 
 object WorkApi {
 
-    private const val BASE_URL = "http://127.0.0.1:3000/api"
+
+    private val BASE_URL = StudioApi.ROOT
+
 
     fun login(email: String, password: String): Result<JSONObject> {
         return request(

@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,6 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -34,10 +39,11 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.Locale
 
 private val blue = Color(0xFF2E619C)
 private val ink = Color(0xFF151515)
-private val bg = Color(0xFFF8F9FB)
+private val bg = Color(0xFFF7F8FA)
 private val darkGreen = Color(0xFF364D37)
 private val green = Color(0xFF166534)
 private val lightGreen = Color(0xFF9CDF9E)
@@ -46,6 +52,9 @@ private val cream = Color(0xFFFEF3C7)
 private val red = Color(0xFFAF2626)
 private val lightRed = Color(0xFFFEC7C7)
 private val kyiv = ZoneId.of("Europe/Kyiv")
+// Agreed MVP scope: payment flow will be enabled when the team configures LiqPay.
+// UI still displays the server's authoritative payment state and hold deadline.
+private const val paymentsInMvp = false
 
 private data class Space(
     val id: String, val name: String, val type: String, val location: String,
@@ -58,7 +67,7 @@ private data class Booking(
     val id: String, val workspace: String, val tariff: String, val date: String,
     val startTime: String, val endTime: String, val status: String, val amount: String,
     val paymentStatus: String, val paymentDeadline: String, val paymentEnabled: Boolean,
-    val reference: String
+    val paymentProvider: String, val reference: String
 )
 
 private fun JSONObject.spaces(): List<Space> = optJSONArray("workspaces").orEmpty().objects().map {
@@ -89,9 +98,62 @@ private fun JSONObject.bookings(): List<Booking> = optJSONArray("bookings").orEm
         it.optString("date"), it.optString("startTime"), it.optString("endTime"),
         it.optString("status"), it.optString("amount"), it.optString("paymentStatus"),
         it.optString("paymentDeadline"), it.optBoolean("paymentIntegrationAvailable"),
-        it.optString("reference")
+        it.optString("paymentProvider"), it.optString("reference")
     )
 }
+/** Visible UI formatting only: prices come from backend, not Figma placeholders. */
+private fun moneyLabel(raw: String): String = raw.removeSuffix(".00").ifEmpty { "0" }
+
+private fun displayDate(raw: String): String = try {
+    val chosen = LocalDate.parse(raw)
+    val label = chosen.format(DateTimeFormatter.ofPattern("EEE, MMM d", Locale.ENGLISH))
+    if (chosen == LocalDate.now(kyiv)) "Today, $label" else label
+} catch (_: Exception) { raw }
+
+/** Lightweight vector icons resembling the Figma tab bar, without extra dependencies. */
+@Composable
+private fun WorkTabIcon(index: Int, tint: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val scale = size.width / 24f
+        val line = 1.6.dp.toPx()
+        fun at(x: Float, y: Float) = Offset(x * scale, y * scale)
+        fun outline(x: Float, y: Float, w: Float, h: Float, radius: Float = 1.4f) {
+            drawRoundRect(
+                color = tint, topLeft = at(x, y), size = Size(w * scale, h * scale),
+                cornerRadius = CornerRadius(radius * scale), style = Stroke(width = line)
+            )
+        }
+        fun rule(x1: Float, y1: Float, x2: Float, y2: Float) =
+            drawLine(tint, at(x1, y1), at(x2, y2), strokeWidth = line)
+        when (index) {
+            0 -> { // Spaces: four outlined squares.
+                outline(3f, 3f, 7f, 7f)
+                outline(14f, 3f, 7f, 7f)
+                outline(3f, 14f, 7f, 7f)
+                outline(14f, 14f, 7f, 7f)
+            }
+            1 -> { // Booking: calendar.
+                outline(3f, 5f, 18f, 16f, 2f)
+                rule(3f, 10f, 21f, 10f)
+                rule(8f, 2.5f, 8f, 7.5f)
+                rule(16f, 2.5f, 16f, 7.5f)
+            }
+            2 -> { // Tariffs: wallet.
+                outline(3f, 7f, 18f, 14f, 2f)
+                outline(14f, 12f, 9f, 6f, 1.5f)
+                rule(6f, 7f, 18f, 3f)
+                drawCircle(tint, radius = 1f * scale, center = at(17f, 15f))
+            }
+            else -> { // Profile.
+                drawCircle(tint, radius = 9f * scale, center = at(12f, 12f), style = Stroke(line))
+                drawCircle(tint, radius = 3.1f * scale, center = at(12f, 9f), style = Stroke(line))
+                drawArc(tint, 200f, 140f, false, topLeft = at(6f, 14f),
+                    size = Size(12f * scale, 7f * scale), style = Stroke(line))
+            }
+        }
+    }
+}
+
 private fun formatLocalTime(iso: String): String? = try {
     if (iso.isBlank() || iso == "null") null
     else Instant.parse(iso).atZone(kyiv).format(DateTimeFormatter.ofPattern("HH:mm"))
@@ -108,6 +170,11 @@ private fun niceError(error: Exception): String = when (error) {
         "BOOKING_CONFLICT", "WORKSPACE_OCCUPIED_NOW", "WORKSPACE_UNAVAILABLE" -> "Місце вже зайняте. Оновіть доступність і виберіть інший час."
         "OUTSIDE_OPENING_HOURS", "INVALID_INTERVAL", "BOOKING_IN_PAST" -> "Перевірте дату, час і години роботи коворкінгу."
         "PAYMENT_WINDOW_EXPIRED" -> "Час для оплати минув. Створіть нове бронювання."
+        "PAYMENTS_DISABLED", "PAYMENTS_NOT_CONFIGURED" ->
+            "LiqPay sandbox ще не налаштований на сервері. Потрібні тестові ключі та публічний HTTPS callback."
+        "PAYMENT_ATTEMPT_PENDING" -> "Ця оплата вже розпочата. Поверніться до її сторінки або оновіть бронювання."
+        "PAYMENT_ATTEMPT_FINISHED" -> "Ця спроба вже завершилася. Оновіть історію та спробуйте знову, якщо дозволено."
+        "PAYMENT_REQUIRES_REVIEW" -> "Платіж потребує перевірки оператором. Не створюйте повторну оплату."
         "UNAUTHENTICATED" -> "Сесія закінчилася. Увійдіть повторно."
         else -> error.message ?: "Помилка сервера"
     }
@@ -137,6 +204,8 @@ fun WorkspaceScreen(
     var selectedSpace by remember { mutableStateOf<Space?>(null) }
     var selectedTariff by remember { mutableStateOf<Tariff?>(null) }
     var confirmPayment by remember { mutableStateOf<Booking?>(null) }
+    var confirmLiqPay by remember { mutableStateOf<Booking?>(null) }
+    var hostedCheckout by remember { mutableStateOf<LiqPayCheckout?>(null) }
     var userName by remember { mutableStateOf("") }
     var userEmail by remember { mutableStateOf("") }
     var userRole by remember { mutableStateOf("") }
@@ -168,9 +237,10 @@ fun WorkspaceScreen(
     }
 
     // A user can always move back from Tariffs to Spaces without losing their selected interval.
-    BackHandler(enabled = selectedTariff != null || confirmPayment != null) {
+    BackHandler(enabled = selectedTariff != null || confirmPayment != null || confirmLiqPay != null) {
         selectedTariff = null
         confirmPayment = null
+        confirmLiqPay = null
     }
 
     LaunchedEffect(tab, date, start, end, refresh, bookingsPage) {
@@ -235,21 +305,32 @@ fun WorkspaceScreen(
         selectedTariff = tariff
     }
 
+    // A hosted payment response is not proof of payment. Always refresh the backend history.
+    hostedCheckout?.let { checkout ->
+        LiqPayCheckoutScreen(checkout = checkout, onClose = {
+            hostedCheckout = null
+            tab = 1
+            refresh++
+            message = "Перевіряємо результат на сервері. Якщо callback ще не прийшов, натисніть Refresh."
+        })
+        return
+    }
+
     Column(Modifier.fillMaxSize().background(bg)) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 0 -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 17.dp, vertical = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(13.dp)
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     item {
-                        Text("Find a workspace", fontSize = 25.sp, color = ink, fontWeight = FontWeight.ExtraBold)
+                        Text("Find a workspace", fontSize = 23.sp, color = ink, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp)
                         if (isGuest) {
                             Text("Guest mode — browse freely; sign in to book.", color = blue, fontSize = 12.sp)
                             TextButton(onClick = onLoginRequested) { Text("Sign in", color = blue) }
                         }
-                        Text("Choose a place that works for you", fontSize = 12.sp, color = ink)
+                        Text("Choose a place that works for you", fontSize = 12.sp, color = ink, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(12.dp))
                         Text("Select date", fontWeight = FontWeight.Bold, color = ink, fontSize = 12.sp)
                         Spacer(Modifier.height(5.dp))
@@ -268,8 +349,8 @@ fun WorkspaceScreen(
                             border = BorderStroke(1.dp, ink),
                             colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White)
                         ) {
-                            Text(date, color = ink, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
-                            Text("▣", color = ink, fontSize = 18.sp)
+                            Text(displayDate(date), color = ink, fontWeight = FontWeight.Medium, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Start)
+                            WorkTabIcon(1, ink)
                         }
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -289,7 +370,7 @@ fun WorkspaceScreen(
                         Spacer(Modifier.height(15.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("Available workspaces", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ink)
+                                Text("Available workspaces", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = ink)
                                 Text("Choose a workspace to continue", fontSize = 11.sp, color = ink)
                             }
                             TextButton(onClick = { refresh++ }) { Text("Refresh", color = blue, fontSize = 12.sp) }
@@ -327,19 +408,19 @@ fun WorkspaceScreen(
                         val pillBg = if (free) lightGreen else if (unavailable) lightRed else cream
                         val pillInk = if (free) green else if (unavailable) red else warning
                         Surface(
-                            modifier = Modifier.fillMaxWidth().border(1.dp, ink, RoundedCornerShape(10.dp))
+                            modifier = Modifier.fillMaxWidth().border(1.dp, ink, RoundedCornerShape(9.dp))
                                 .clickable { detailsSpace = space },
-                            shape = RoundedCornerShape(10.dp), color = Color.White
+                            shape = RoundedCornerShape(9.dp), color = Color.White
                         ) {
-                            Column(Modifier.padding(14.dp)) {
+                            Column(Modifier.padding(13.dp)) {
                                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.SpaceBetween,
                                     modifier = Modifier.fillMaxWidth()) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(space.name, color = ink, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                        Text(space.type + " · " + space.location, color = ink, fontSize = 11.sp)
+                                        Text(space.name, color = ink, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                                        Text(space.type + " · " + space.location, color = ink, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                         if (space.description.isNotBlank()) Text(space.description, color = Color.DarkGray, fontSize = 11.sp)
                                     }
-                                    Surface(color = pillBg, shape = RoundedCornerShape(12.dp)) {
+                                    Surface(color = pillBg, shape = RoundedCornerShape(10.dp)) {
                                         Text(label, modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = pillInk,
                                             fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                     }
@@ -368,7 +449,7 @@ fun WorkspaceScreen(
                                     enabled = !unavailable && !busy && intervalError == null,
                                     colors = ButtonDefaults.buttonColors(containerColor = blue,
                                         disabledContainerColor = Color(0xFFCECECE), disabledContentColor = Color.Gray),
-                                    shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(42.dp)
+                                    shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth().height(43.dp)
                                 ) {
                                     Text(if (free) "Book workspace" else if (unavailable) "Unavailable" else "Choose another time",
                                         fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -382,21 +463,21 @@ fun WorkspaceScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     item {
-                        Text("My bookings", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = ink)
+                        Text("My bookings", fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, color = ink)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Your reservations and payments", fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            Text("Your reservations", fontSize = 12.sp, modifier = Modifier.weight(1f))
                             TextButton(onClick = { refresh++ }) { Text("Refresh") }
                         }
                     }
                     if (bookings.isEmpty() && !loading) item { Text("У вас поки немає бронювань.") }
                     items(bookings, key = { it.id }) { booking ->
                         Surface(color = Color.White, shape = RoundedCornerShape(9.dp),
-                            modifier = Modifier.fillMaxWidth().border(1.dp, Color.Gray, RoundedCornerShape(9.dp))) {
+                            modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFF777777), RoundedCornerShape(9.dp))) {
                             Column(Modifier.padding(14.dp)) {
                                 Text(booking.workspace, color = ink, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                                 if (booking.reference.isNotBlank()) Text("Reference: ${booking.reference}", fontSize = 11.sp)
                                 Text("${booking.date} · ${booking.startTime}–${booking.endTime}", fontSize = 12.sp)
-                                Text("${booking.tariff} · ₴${booking.amount}", fontSize = 13.sp)
+                                Text("${booking.tariff} · ₴${moneyLabel(booking.amount)}", fontSize = 13.sp)
                                 Text("Booking: ${booking.status}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                 Text("Payment: ${booking.paymentStatus.takeUnless { it == "null" || it.isBlank() } ?: "Not paid"}", fontSize = 12.sp)
                                 if (booking.status == "PENDING_PAYMENT") {
@@ -404,14 +485,30 @@ fun WorkspaceScreen(
                                     Text("Payment deadline: %02d:%02d".format(secondsLeft / 60, secondsLeft % 60),
                                         fontSize = 12.sp, color = warning)
                                     val canPay = booking.paymentEnabled && isFutureDeadline(booking.paymentDeadline)
-                                    if (canPay) {
+                                    if (canPay && paymentsInMvp) {
                                         Spacer(Modifier.height(10.dp))
-                                        Button(onClick = { confirmPayment = booking }, enabled = !busy,
+                                        val liqpay = booking.paymentProvider == "LIQPAY_TEST"
+                                        Button(
+                                            onClick = {
+                                                if (liqpay) confirmLiqPay = booking else confirmPayment = booking
+                                            },
+                                            enabled = !busy,
                                             colors = ButtonDefaults.buttonColors(containerColor = blue),
-                                            modifier = Modifier.fillMaxWidth()) { Text("Test payment (demo)") }
-                                        Text("Тільки симуляція; гроші не списуються.", color = Color.Gray, fontSize = 11.sp)
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(if (liqpay) "Pay via LiqPay (sandbox)" else "Test payment (demo)")
+                                        }
+                                        Text(
+                                            if (liqpay) "Тестовий LiqPay. Статус підтверджує лише сервер після callback."
+                                            else "Локальна симуляція; гроші не списуються.",
+                                            color = Color.Gray, fontSize = 11.sp
+                                        )
                                     } else {
-                                        Text("Оплата зараз недоступна або час резервування вичерпано.", color = warning, fontSize = 11.sp)
+                                        Text(
+                                            if (!paymentsInMvp) "Оплату відкладено для MVP. Резервування діє лише до дедлайну."
+                                            else "Оплата зараз недоступна або час резервування вичерпано.",
+                                            color = warning, fontSize = 11.sp
+                                        )
                                     }
                                 }
                             }
@@ -427,12 +524,12 @@ fun WorkspaceScreen(
                     }
                 }
                 2 -> LazyColumn(
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(23.dp)
+                    contentPadding = PaddingValues(horizontal = 22.dp, vertical = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(30.dp)
                 ) {
                     item {
-                        Text("Choose your plan", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = ink)
-                        Text("Select a tariff for your workspace booking.", fontSize = 12.sp, color = ink)
+                        Text("Choose your plan", fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+                        Text("Select a tariff for your workspace booking.", fontSize = 12.sp, color = ink, fontWeight = FontWeight.Medium)
                         selectedSpace?.let {
                             Spacer(Modifier.height(8.dp))
                             Text("${it.name} · $date, $start–$end", fontSize = 12.sp, color = blue)
@@ -449,12 +546,12 @@ fun WorkspaceScreen(
                             color = if (featured) darkGreen else Color.White,
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Column(Modifier.padding(20.dp)) {
+                            Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                                 Text(tariff.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = fg)
-                                Text("₴${tariff.price}", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = fg)
+                                Text("₴${moneyLabel(tariff.price)}", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = fg)
                                 HorizontalDivider(Modifier.padding(vertical = 12.dp), color = if (featured) Color.LightGray else Color(0xFFDDDDDD))
                                 Text("Фіксована ціна за одне бронювання",
-                                    color = if (featured) Color.White else Color.Gray, fontSize = 12.sp,
+                                    color = if (featured) Color.White else Color.Gray, fontSize = 11.sp,
                                     modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                                 Spacer(Modifier.height(10.dp))
                                 OutlinedButton(
@@ -462,7 +559,7 @@ fun WorkspaceScreen(
                                         if (selectedSpace == null) { message = "Спочатку оберіть місце у Spaces"; tab = 0 }
                                         else requestBooking(selectedSpace!!, tariff)
                                     },
-                                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                                    modifier = Modifier.fillMaxWidth().height(43.dp),
                                     shape = RoundedCornerShape(6.dp), border = BorderStroke(1.dp, if (featured) Color.White else darkGreen),
                                     colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White)
                                 ) { Text("Select tariff", color = ink, fontWeight = FontWeight.Bold, fontSize = 13.sp) }
@@ -471,7 +568,7 @@ fun WorkspaceScreen(
                     }
                 }
                 else -> Column(Modifier.fillMaxSize().padding(20.dp)) {
-                    Text("My profile", fontSize = 25.sp, color = ink, fontWeight = FontWeight.Bold)
+                    Text("My profile", fontSize = 23.sp, color = ink, fontWeight = FontWeight.ExtraBold)
                     Spacer(Modifier.height(20.dp))
                     Text(userName, fontSize = 17.sp, fontWeight = FontWeight.Medium)
                     Text(userEmail, fontSize = 13.sp)
@@ -523,8 +620,8 @@ fun WorkspaceScreen(
                 TextButton(onClick = { message = "" }) { Text("OK") }
             }
         }
-        HorizontalDivider(color = Color(0xFFCCCCCC))
-        Row(Modifier.fillMaxWidth().background(Color.White).navigationBarsPadding().height(61.dp),
+        HorizontalDivider(color = Color(0xFFCCCCCC), thickness = 1.dp)
+        Row(Modifier.fillMaxWidth().background(Color.White).navigationBarsPadding().height(62.dp),
             horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             listOf("Spaces", "Booking", "Tariffs", "Profile").forEachIndexed { index, name ->
                 Column(Modifier.weight(1f).fillMaxHeight().clickable {
@@ -533,9 +630,11 @@ fun WorkspaceScreen(
                     } else if (tab != index) {
                         tab = index; message = ""; if (index == 1) bookingsPage = 1
                     }
-                }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Text(listOf("▦", "▣", "▱", "◎")[index], fontSize = 22.sp, color = if (tab == index) blue else ink)
-                    Text(name, fontSize = 11.sp, color = if (tab == index) blue else ink, fontWeight = FontWeight.Bold)
+                }, horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically)) {
+                WorkTabIcon(index, if (tab == index) blue else ink)
+                    Text(name, fontSize = 10.sp, color = if (tab == index) blue else ink,
+                        fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -558,7 +657,7 @@ fun WorkspaceScreen(
             title = { Text("Confirm booking") },
             text = {
                 Text("${space?.name.orEmpty()}\n$date · $start–$end\nTariff: ${tariff.name}\n" +
-                    "Total: ₴${tariff.price}\n\n" +
+                    "Total: ₴${moneyLabel(tariff.price)}\n\n" +
                     "Це реальне бронювання у вашій тестовій базі. Час для оплати обмежений.")
             },
             confirmButton = {
@@ -583,7 +682,7 @@ fun WorkspaceScreen(
                                     .put("endTime", end).put("confirm", true), accessToken)
                             }
                             val booking = data.getJSONObject("booking")
-                            message = "Створено бронювання ${booking.optString("status")}. Оплатіть його у вкладці Booking."
+                            message = "Створено бронювання ${booking.optString("status")}. Перегляньте його у вкладці Booking."
                             selectedSpace = null
                             tab = 1
                             bookingsPage = 1
@@ -599,6 +698,43 @@ fun WorkspaceScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { selectedTariff = null }) { Text("Back") } }
+        )
+    }
+
+    confirmLiqPay?.let { booking ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmLiqPay = null },
+            title = { Text("LiqPay sandbox checkout") },
+            text = {
+                Text("${booking.workspace}\n₴${booking.amount}\n\n" +
+                    "Відкриється захищена сторінка LiqPay. Використовуйте тільки тестові дані, " +
+                    "які надає платіжний провайдер. Жодні платіжні реквізити не надсилаються в WorkStudio.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmLiqPay = null
+                    busy = true
+                    scope.launch {
+                        try {
+                            val response = withContext(Dispatchers.IO) {
+                                val key = LiqPayOperationStore.getOrCreate(
+                                    ctx, booking.id, retryFailed = booking.paymentStatus == "FAILED"
+                                )
+                                StudioApi.post("/bookings/${booking.id}/payments/liqpay", JSONObject(), accessToken, key)
+                            }
+                            hostedCheckout = LiqPayCheckout.fromApiResponse(response)
+                            message = ""
+                        } catch (e: Exception) {
+                            message = niceError(e)
+                        } finally {
+                            busy = false
+                        }
+                    }
+                }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = blue)) {
+                    Text("Open LiqPay sandbox")
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmLiqPay = null }) { Text("Cancel") } }
         )
     }
 
@@ -664,7 +800,7 @@ private fun TimePickerField(value: String, onSelect: (String) -> Unit) {
         OutlinedButton(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth().height(43.dp),
-            border = BorderStroke(1.dp, Color(0xFFAAAAAA)),
+            border = BorderStroke(1.dp, Color(0xFF999999)),
             shape = RoundedCornerShape(7.dp),
             colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White)
         ) { Text(value, color = ink, fontSize = 12.sp) }
