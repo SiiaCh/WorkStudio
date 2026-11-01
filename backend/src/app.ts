@@ -1,4 +1,5 @@
 import express from "express";
+import { liqpayCallbackRouter } from "./routes/payments.js";
 import { workspaceRouter, tariffRouter, adminCatalogRouter } from "./routes/catalog.js";
 import { bookingRouter, adminBookingRouter, notificationRouter } from "./routes/bookings.js";
 import helmet from "helmet";
@@ -25,6 +26,8 @@ app.use(cors({
   credentials: false, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"], exposedHeaders: ["Retry-After"],
 }));
+// Provider-only form endpoint: signature verification replaces Bearer authentication.
+app.use("/api/payments/liqpay/callback", liqpayCallbackRouter);
 const generalLimit = ipLimit(300, 15 * 60_000);
 app.use((req, res, next) => {
   // Polling reads have their own limit, sized for shared coworking network addresses.

@@ -182,11 +182,13 @@ model Notification {
 enum PaymentStatus {
   PENDING
   SUCCEEDED
+  REQUIRES_REVIEW
   FAILED
 }
 
 enum PaymentProvider {
   MOCK
+  LIQPAY_TEST
 }
 
 model Payment {
@@ -198,6 +200,10 @@ model Payment {
   currency          String          @default("UAH") @db.Char(3)
   provider          PaymentProvider
   providerReference String?         @unique @db.Uuid
+  providerPaymentId String?         @unique @db.VarChar(100)
+  checkoutPublicKey String?         @db.VarChar(100)
+  checkoutServerUrl String?         @db.VarChar(510)
+  checkoutResultUrl String?         @db.VarChar(510)
   status            PaymentStatus   @default(PENDING)
   idempotencyKey    String          @db.Uuid
   requestHash       String          @db.Char(64)
@@ -206,8 +212,30 @@ model Payment {
   booking           Booking         @relation(fields: [bookingId], references: [id], onDelete: Restrict)
   tariff            Tariff          @relation(fields: [tariffId], references: [id], onDelete: Restrict)
   user              User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  callbacks         PaymentCallback[]
 
   @@unique([userId, idempotencyKey])
   @@index([bookingId, createdAt])
   @@index([tariffId])
+}
+
+enum CallbackDisposition {
+  PENDING
+  APPLIED
+  IGNORED
+  REQUIRES_REVIEW
+}
+
+model PaymentCallback {
+  id                String              @id @default(uuid()) @db.Uuid
+  paymentId         String              @db.Uuid
+  payloadHash       String              @db.Char(64)
+  providerStatus    String              @db.VarChar(80)
+  providerPaymentId String              @db.VarChar(100)
+  disposition       CallbackDisposition
+  receivedAt        DateTime            @default(now()) @db.Timestamptz(3)
+  payment           Payment             @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, payloadHash])
+  @@index([paymentId, receivedAt])
 }

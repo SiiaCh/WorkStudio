@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { initiateLiqPay } from "../services/liqpay.js";
 import type { RequestHandler } from "express";
 import { mockPaymentSchema } from "../validation/payments.js";
 import { mockPayment, listPayments } from "../services/payments.js";
@@ -9,4 +11,9 @@ export const simulate: RequestHandler = async (req, res) => {
 };
 export const history: RequestHandler = async (req, res) => {
   res.json({ data: await listPayments(req.auth!.userId, resourceId(req)) });
+};
+
+export const initiate: RequestHandler = async (req, res) => {
+  z.strictObject({}).parse(req.body);
+  res.json({ data: await initiateLiqPay(req.auth!.userId, resourceId(req), operationKey(req)) });
 };

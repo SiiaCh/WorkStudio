@@ -7,6 +7,10 @@ const integer = (fallback: number, min: number, max: number) => z.coerce.number(
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   MOCK_PAYMENTS_ENABLED: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
+  LIQPAY_TEST_ENABLED: z.enum(["true", "false"]).default("false").transform(value => value === "true"),
+  LIQPAY_PUBLIC_KEY: optionalText,
+  LIQPAY_PRIVATE_KEY: optionalText,
+  LIQPAY_RESULT_URL: optionalText,
   HOST: z.string().default("127.0.0.1"),
   PORT: integer(3000, 1, 65535),
   DATABASE_URL: databaseUrlSchema,

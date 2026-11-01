@@ -254,3 +254,46 @@ Authorization: Bearer {{token}}
 ### Own payment attempts, newest first (other client's booking returns 404)
 GET {{base}}/bookings/{{bookingId}}/payments
 Authorization: Bearer {{token}}
+
+### Official LiqPay TEST checkout (distinct from the local mock)
+# On Render use https://workstudio-api.onrender.com/api as base.
+# Requires LIQPAY_TEST_ENABLED=true plus BOTH actual sandbox_ keys on the backend.
+# Own verified-client booking, still pending and before its unchanged deadline.
+@liqpayOperationKey = 359b80f0-07cf-43b3-9e56-0e096d493071
+
+### Initiate checkout; same key retries the same pending attempt
+POST {{base}}/bookings/{{bookingId}}/payments/liqpay
+Authorization: Bearer {{token}}
+Idempotency-Key: {{liqpayOperationKey}}
+Content-Type: application/json
+
+{}
+
+# Submit data.checkout.fields as a browser form POST to data.checkout.url.
+# Do not send card information to WorkStudio, log signed data, or mark paid after navigation.
+# Use official test cards ONLY on LiqPay's hosted test page.
+# Use a NEW operation key for a new eligible attempt after a FAILED result.
+
+### Poll actual booking state after returning from the provider
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Private payment history, including providerPaymentId and reconciliationRequired
+GET {{base}}/bookings/{{bookingId}}/payments
+Authorization: Bearer {{token}}
+
+### Provider callback format only: normally delivered by LiqPay, no client Bearer token
+# A real valid signature is required. Never manufacture successful results in the frontend.
+# These placeholders MUST be application/x-www-form-urlencoded encoded:
+# percent-encode +, / and = in the original base64 strings.
+@callbackDataUrlEncoded = REPLACE_WITH_URL_ENCODED_PROVIDER_DATA
+@callbackSignatureUrlEncoded = REPLACE_WITH_URL_ENCODED_PROVIDER_SIGNATURE
+POST {{base}}/payments/liqpay/callback
+Content-Type: application/x-www-form-urlencoded
+
+data={{callbackDataUrlEncoded}}&signature={{callbackSignatureUrlEncoded}}
+
+### TC-08: with expired/invalid token expect 401 JSON, no Location redirect
+# Frontend clears authentication and navigates to /login; it preserves login on role 403.
+GET {{base}}/admin/session
+Authorization: Bearer {{token}}

@@ -1,3 +1,4 @@
+import { liqpayAvailable } from "../payments/liqpay.js";
 import { env } from "../config/env.js";
 import type { Payment, Prisma, Booking, BookingSeries, Workspace, Tariff } from "../generated/prisma/client.js";
 import { facility, localParts } from "../config/facility.js";
@@ -12,7 +13,7 @@ export function tariffView(tariff: Tariff) {
 }
 export const bookingInclude = {
   series: true,
-  // PostgreSQL enum order is PENDING, SUCCEEDED, FAILED: a success takes precedence over earlier failures.
+  // Successful results take precedence over review/failed attempts; unresolved attempts stay visible.
   payments: { orderBy: [{ status: "asc" }, { createdAt: "desc" }, { id: "desc" }], take: 1 },
 } satisfies Prisma.BookingInclude;
 
@@ -23,7 +24,7 @@ export function bookingView(booking: Booking & { series?: BookingSeries | null; 
   return {
     ...fields, reference: booking.id, amount: booking.amount.toFixed(2), currency: facility.currency,
     date: localStart.date, startTime: localStart.time, endTime: localEnd.time, timeZone: facility.timeZone,
-    isRecurring: booking.seriesId !== null, paymentStatus: payments?.[0]?.status ?? null, paymentIntegrationAvailable: env.MOCK_PAYMENTS_ENABLED,
-    paymentProvider: payments?.[0]?.provider ?? (env.MOCK_PAYMENTS_ENABLED ? "MOCK" : null),
+    isRecurring: booking.seriesId !== null, paymentStatus: payments?.[0]?.status ?? null, paymentIntegrationAvailable: env.MOCK_PAYMENTS_ENABLED || liqpayAvailable(),
+    paymentProvider: payments?.[0]?.provider ?? (liqpayAvailable() ? "LIQPAY_TEST" : env.MOCK_PAYMENTS_ENABLED ? "MOCK" : null),
   };
 }

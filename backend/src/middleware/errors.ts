@@ -22,16 +22,20 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
     problem = new AppError(400, "VALIDATION_ERROR", "Check the submitted fields.", error.issues.map(issue => ({ field: issue.path.join("."), message: issue.message })));
   } else if (error instanceof SyntaxError && "body" in error) {
     problem = new AppError(400, "INVALID_JSON", "Request body must contain valid JSON.");
-  } else if (error?.type === "entity.too.large") {
+  } else if (error?.type === "entity.too.large" || error?.type === "parameters.too.many") {
     problem = new AppError(413, "PAYLOAD_TOO_LARGE", "The request body is too large.");
   } else if (error?.type === "encoding.unsupported" || error?.type === "charset.unsupported") {
     problem = new AppError(415, "UNSUPPORTED_ENCODING", "Use an uncompressed UTF-8 JSON request body.");
+  } else if (state === "23514" && req.originalUrl.split("?")[0]?.replace(/\/$/, "") === "/api/payments/liqpay/callback") {
+    problem = new AppError(503, "RESOURCE_BUSY", "Payment eligibility changed; retry the callback.", { retryAfterSeconds: 1 });
+  } else if (state === "23505" && req.originalUrl.includes("/payments/liqpay")) {
+    problem = new AppError(409, "PAYMENT_REFERENCE_MISMATCH", "The payment reference is already in use.");
   } else if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" || state === "23505") {
     const isRegistration = req.originalUrl.split("?")[0]?.replace(/\/$/, "") === "/api/auth/register";
     problem = isRegistration
       ? new AppError(409, "EMAIL_ALREADY_REGISTERED", "This email address is already registered.")
       : new AppError(409, "NAME_ALREADY_EXISTS", "An active workspace or tariff already has this name.");
-  } else if (state === "23514" && req.originalUrl.split("?")[0]?.replace(/\/$/, "").endsWith("/mock-payments")) {
+  } else if (state === "23514" && req.originalUrl.split("?")[0]?.replace(/\/$/, "").match(/\/(?:mock-payments|payments\/liqpay)$/)) {
     problem = new AppError(409, "BOOKING_NOT_PAYABLE", "Payment eligibility changed. Refresh the booking before retrying.");
   } else if (state === "23P01") {
     problem = new AppError(409, "BOOKING_CONFLICT", "The interval conflicts with another active booking. Refresh availability and try again.");

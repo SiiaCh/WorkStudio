@@ -13,6 +13,7 @@ bookingRouter.post("/recurring/preview", controller.recurringPreview);
 bookingRouter.post("/recurring", requireVerifiedEmail, controller.recurringCreate);
 bookingRouter.post("/", requireVerifiedEmail, controller.create);
 bookingRouter.get("/:id/payments", payments.history);
+bookingRouter.post("/:id/payments/liqpay", requireVerifiedEmail, payments.initiate);
 if (env.MOCK_PAYMENTS_ENABLED && env.NODE_ENV !== "production") bookingRouter.post("/:id/mock-payments", requireVerifiedEmail, payments.simulate);
 bookingRouter.get("/:id", controller.detail);
 

@@ -19,7 +19,11 @@ const childEnv = {
   MOCK_PAYMENTS_ENABLED: "true", JWT_SECRET: randomBytes(48).toString("base64url"),
   EMAIL_TRANSPORT: "preview", HOST: "127.0.0.1", BCRYPT_ROUNDS: "10",
   TLS_CERT_PATH: "", TLS_KEY_PATH: "", TRUST_PROXY_HOPS: "0",
-  PUBLIC_API_URL: "http://127.0.0.1:3000", CORS_ORIGINS: "http://localhost:5173",
+  PUBLIC_API_URL: "https://api.example.test", CORS_ORIGINS: "http://localhost:5173",
+  // Generated test doubles, not merchant credentials; no external requests are made.
+  LIQPAY_TEST_ENABLED: "true", LIQPAY_PUBLIC_KEY: "sandbox_test_" + randomBytes(12).toString("hex"),
+  LIQPAY_PRIVATE_KEY: "sandbox_test_" + randomBytes(32).toString("hex"),
+  LIQPAY_RESULT_URL: "https://client.example.test/bookings",
   FACILITY_TIME_ZONE: "Europe/Kyiv",
   FACILITY_OPENING_HOURS: JSON.stringify(Object.fromEntries(["MON","TUE","WED","THU","FRI","SAT","SUN"].map(day => [day, { open: "08:00", close: "22:00" }]))),
   BOOKING_HOLD_MINUTES: "15", RESERVATION_SWEEP_INTERVAL_MS: "100",
@@ -49,7 +53,7 @@ try {
   console.info("Created isolated database " + databaseName + ".");
   await run(["node_modules/prisma/build/index.js", "generate"]);
   await run(["node_modules/prisma/build/index.js", "migrate", "deploy"]);
-  await run(["--import", "tsx", "--test", "--test-concurrency=1", "tests/config.test.ts", "tests/api.test.ts"]);
+  await run(["--import", "tsx", "--test", "--test-concurrency=1", "tests/config.test.ts", "tests/api.test.ts", "tests/liqpay.test.ts"]);
 } catch {
   console.error("Tests could not complete. Check test output, PostgreSQL and CREATEDB permission; development data was not reset.");
   process.exitCode = 1;

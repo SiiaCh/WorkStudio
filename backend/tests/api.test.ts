@@ -189,14 +189,16 @@ describe("HTTP integration", { concurrency: false }, () => {
     assert.equal(replacement.status, "PENDING_PAYMENT");
   });
   test("payment deadline is rechecked after waiting for a workspace lock", async () => {
-    const { workspace, tariff } = await catalog(), b = await fixture(workspace, tariff, { paymentDeadline: new Date(Date.now() + 500) });
+    const { workspace, tariff } = await catalog();
+    const databaseTime = (await prisma.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS now`)[0]!.now;
+    const b = await fixture(workspace, tariff, { paymentDeadline: new Date(databaseTime.getTime() + 1200) });
     const blocker = new Client({ connectionString: env.DATABASE_URL });
     await blocker.connect();
     try {
       await blocker.query("BEGIN");
       await blocker.query('SELECT id FROM "Workspace" WHERE id=$1 FOR UPDATE', [workspace.id]);
       const pending = pay(b.id);
-      await delay(650);
+      await blocker.query("SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp())) + 0.05))", [b.paymentDeadline]);
       await blocker.query("COMMIT");
       const result = await pending;
       assert.equal(result.status, 409, JSON.stringify(result.body));

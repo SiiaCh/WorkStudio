@@ -8,9 +8,9 @@ import { bookingOwner, notifyBooking } from "./booking-rules.js";
 import { settleBookings } from "./lifecycle.js";
 import { databaseNow, lockWorkspaces, transaction } from "./transactions.js";
 
-export function paymentView(payment: Payment) {
+export function paymentView(payment: Payment & { callbacks?: Array<{ disposition: string }> }) {
   const { id, bookingId, tariffId, amount, currency, provider, providerReference, status, createdAt, completedAt } = payment;
-  return { id, bookingId, tariffId, amount: amount.toFixed(2), currency, provider, providerReference, status, createdAt, completedAt };
+  return { id, bookingId, tariffId, providerPaymentId: payment.providerPaymentId, reconciliationRequired: payment.status === "REQUIRES_REVIEW" || !!payment.callbacks?.length, amount: amount.toFixed(2), currency, provider, providerReference, status, createdAt, completedAt };
 }
 function result(payment: Payment) {
   // This is the outcome at the time of this attempt, including on an idempotent replay.
@@ -39,6 +39,8 @@ export async function mockPayment(userId: string, bookingId: string, key: string
     // Return the rejection so lifecycle cleanup commits instead of rolling back on an expired request.
     if (booking.cancellationReason === "PAYMENT_TIMEOUT") return { error: new AppError(409, "PAYMENT_WINDOW_EXPIRED", "The original payment deadline has expired. Create a new booking.") };
     if (booking.status !== "PENDING_PAYMENT" || booking.endsAt <= now) return { error: new AppError(409, "BOOKING_NOT_PAYABLE", "Only an active Pending Payment booking can be paid.") };
+    if (await tx.payment.count({ where: { bookingId, provider: "LIQPAY_TEST", status: "PENDING" } })) throw new AppError(409, "PAYMENT_ATTEMPT_PENDING", "A LiqPay test checkout is pending for this booking.");
+    if (await tx.payment.count({ where: { bookingId, OR: [{ status: "REQUIRES_REVIEW" }, { callbacks: { some: { disposition: "REQUIRES_REVIEW" } } }] } })) throw new AppError(409, "PAYMENT_REQUIRES_REVIEW", "Contact the operator before retrying this payment.");
     // Serialize with tariff deletion. Existing booking snapshots remain payable after logical deletion.
     await tx.$queryRaw`SELECT id FROM "Tariff" WHERE id = ${booking.tariffId}::uuid FOR SHARE`;
     const attempt = await tx.payment.create({ data: {
@@ -60,6 +62,6 @@ export async function mockPayment(userId: string, bookingId: string, key: string
 }
 export async function listPayments(userId: string, bookingId: string) {
   if (!await prisma.booking.findFirst({ where: { id: bookingId, userId }, select: { id: true } })) throw new AppError(404, "BOOKING_NOT_FOUND", "The booking does not exist.");
-  const payments = await prisma.payment.findMany({ where: { bookingId, userId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+  const payments = await prisma.payment.findMany({ where: { bookingId, userId }, include: { callbacks: { where: { disposition: "REQUIRES_REVIEW" }, select: { disposition: true }, take: 1 } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
   return { payments: payments.map(paymentView) };
 }

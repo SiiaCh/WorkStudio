@@ -1,6 +1,6 @@
 # WorkStudio Backend API
 
-Base path: `/api`. Requests use UTF-8 JSON (`Content-Type: application/json`). Success envelopes are `{"data":...}`; errors are `{"error":{"code":"...","message":"...","details":...}}`. `details` is optional. Timestamp fields use ISO 8601 UTC; date-only and clock-time inputs use the facility timezone. Currency amounts are decimal strings in responses. All responses use `Cache-Control: no-store`. Local examples use development HTTP on loopback; use HTTPS in deployment.
+Base path: `/api`. Except the provider callback described below, requests use UTF-8 JSON (`Content-Type: application/json`). Success envelopes are `{"data":...}`; errors are `{"error":{"code":"...","message":"...","details":...}}`. `details` is optional. Timestamp fields use ISO 8601 UTC; date-only and clock-time inputs use the facility timezone. Currency amounts are decimal strings in responses. All responses use `Cache-Control: no-store`. Local examples use development HTTP on loopback; use HTTPS in deployment.
 
 ## Authentication endpoints
 
@@ -74,7 +74,7 @@ Malformed tokens return 400 `VALIDATION_ERROR`; unknown/consumed tokens return 4
 
 202: `{"data":{"message":"If this address belongs to an unverified account, a new confirmation link has been requested."}}`.
 
-Development preview additionally includes `data.emailDelivery.verificationUrl` for existing unverified accounts. In SMTP mode the response is generic even if delivery failed; failures are logged without token/recipient data. Existing confirmed and unknown accounts also receive the generic response. A successful resend replaces the prior token, so use the latest email/link. No registration retry is necessary.
+Preview mode (including the Render demonstration) additionally includes `data.emailDelivery.verificationUrl` for existing unverified accounts. In SMTP mode the response is generic even if delivery failed; failures are logged without token/recipient data. Existing confirmed and unknown accounts also receive the generic response. A successful resend replaces the prior token, so use the latest email/link. No registration retry is necessary.
 
 ## Login
 
@@ -132,7 +132,7 @@ Reusing that token on any protected endpoint then returns 401 `UNAUTHENTICATED`,
 - 403: role denied or disallowed browser origin.
 - 404: unknown route.
 - 409: duplicate registration, catalog-name conflicts, booking conflicts, stale versions, or idempotency conflicts.
-- 413: body larger than 16 KB.
+- 413: JSON body larger than 16 KB; provider callbacks have the separate 64 KB/form limits described below.
 - 415: missing/wrong JSON Content-Type or unsupported compression/encoding.
 - 429: IP or account limit; observe Retry-After.
 - 500: unexpected server/database failure; internal details are logged safely and never returned.
@@ -213,7 +213,8 @@ The sweep interval must be 100-1000 ms. MAX_RECURRING_OCCURRENCES is a configura
 | BookingSeries | Client, weekdays (Monday=1 through Sunday=7), date period and local occurrence times |
 | AuditLog | Administrator/action/resource/timestamp/details, with optional idempotency request hash and original result |
 | Notification | Durable client-owned booking/payment event and read timestamp |
-| Payment | Per-booking attempt, saved tariff/amount, MOCK provider/reference, PENDING/SUCCEEDED/FAILED result, completion time and client-scoped operation key |
+| Payment | Per-booking attempt, saved tariff/amount, MOCK or LIQPAY_TEST references, immutable checkout metadata, result, completion time and client-scoped key |
+| PaymentCallback | Append-only selected verified callback fields/hash and processing disposition; no signed payload or card data |
 
 These models reference User records. Payment attempts reference an existing booking, tariff and client, store the snapshotted amount/currency/provider, and retain immutable completed results and idempotency metadata.
 
@@ -271,6 +272,8 @@ All paths below are relative to `/api`.
 | GET | /bookings/:id | Client, own record only; another client's reference returns 404 |
 | GET | /bookings/:id/payments | Client, own booking attempts only |
 | POST | /bookings/:id/mock-payments | Email-verified Client, own eligible booking, key; explicit non-production opt-in |
+| POST | /bookings/:id/payments/liqpay | Email-verified Client, own eligible booking, key; explicit LiqPay test configuration |
+| POST | /payments/liqpay/callback | Public provider form endpoint; cryptographically signed test result required |
 | GET | /admin/bookings | Administrator; filtered/paginated list |
 | GET | /admin/bookings/:id | Administrator |
 | POST | /admin/bookings | Administrator, key; selected owner must be an email-verified Client |
@@ -351,7 +354,7 @@ POST /bookings:
 
 201 returns `data.booking` with id/reference, userId, workspaceId/workspaceName, tariffId/tariffName, amount, currency=UAH, date/startTime/endTime/timeZone, startsAt/endsAt (UTC), status=PENDING_PAYMENT, paymentDeadline, cancellationReason=null, version, timestamps and series information.
 
-`paymentStatus` is null before any attempt. With the explicit mock configuration enabled, `paymentIntegrationAvailable=true` and `paymentProvider="MOCK"`; otherwise operations are disabled. The latest attempt status is reflected in booking responses. See Mock payments below.
+`paymentStatus` is null before any attempt. `paymentIntegrationAvailable` reports configured LiqPay test checkout or enabled local mock support. `paymentProvider` identifies a saved attempt or the available provider (LIQPAY_TEST preferred when both are enabled). See the payment contracts below.
 
 The owner comes from the authenticated session. Unknown fields such as userId, amount, total, role, paymentStatus or status are rejected. The selected workspace and tariff must still exist in the catalog; the interval must be future, within opening hours and conflict-free. Identity/verification is rechecked in the transaction. Adjacent intervals are allowed.
 
@@ -361,7 +364,7 @@ The owner comes from the authenticated session. Unknown fields such as userId, a
 | PENDING_PAYMENT -> CANCELLED / PAYMENT_TIMEOUT | Implemented; deadline reached, interval released |
 | PENDING_PAYMENT or CONFIRMED -> CANCELLED / ADMINISTRATOR | Implemented administrator action; history retained, notification written |
 | CONFIRMED -> COMPLETED | Lifecycle worker applies this after endsAt and writes a notification |
-| PENDING_PAYMENT -> CONFIRMED | Atomic successful mock attempt, explicitly enabled outside production |
+| PENDING_PAYMENT -> CONFIRMED | Verified successful LiqPay test callback, or an explicitly enabled non-production mock attempt |
 | CANCELLED or COMPLETED -> active | Forbidden; create a new booking through a new availability check |
 
 By default, the worker runs every second, with an immediate sweep on startup, and safely settles expired holds and ended Confirmed bookings, with one durable notification per transition. Availability ignores an expired hold immediately, even before cleanup. Booking transactions clean up expired holds under the workspace lock before inserting a replacement. History/detail/calendar reads also refresh lifecycle state. Deadlines are fixed at creation and are not extended by editing or retries. Operational workspace status is never automatically changed by booking or expiry.
@@ -420,7 +423,7 @@ If conflicts exist, change the settings or explicitly accept an alternative for 
 {"alternatives":[{"date":"2026-11-04","workspaceId":"ALTERNATIVE_UUID"}],"confirm":true}
 ```
 
-Submit the full input plus accepted alternatives and confirm=true to POST /bookings/recurring. The server rechecks every date/workspace inside one transaction; it never automatically accepts a suggested alternative. Any conflict returns 409 RECURRING_CONFLICT with dates/options and creates no series/occurrences. Success returns series, all occurrences, totalAmount and UAH. Each occurrence has its own booking/reference/price snapshot and the same initial hold deadline, appears in history/calendar, and starts Pending Payment. Pay occurrences individually through the mock payment endpoint; series-wide payment and automatic confirmation are not implemented.
+Submit the full input plus accepted alternatives and confirm=true to POST /bookings/recurring. The server rechecks every date/workspace inside one transaction; it never automatically accepts a suggested alternative. Any conflict returns 409 RECURRING_CONFLICT with dates/options and creates no series/occurrences. Success returns series, all occurrences, totalAmount and UAH. Each occurrence has its own booking/reference/price snapshot and the same initial hold deadline, appears in history/calendar, and starts Pending Payment. Pay occurrences individually through LiqPay test checkout or the local mock endpoint; series-wide payment and automatic confirmation are not implemented.
 
 ## Catalog and booking error codes
 
@@ -472,6 +475,8 @@ Use `{"scenario":"failure"}` to simulate a declined attempt. Scenario is a mock-
       "currency": "UAH",
       "provider": "MOCK",
       "providerReference": "SERVER_GENERATED_UUID",
+      "providerPaymentId": null,
+      "reconciliationRequired": false,
       "status": "SUCCEEDED",
       "createdAt": "2026-10-30T10:00:00.000Z",
       "completedAt": "2026-10-30T10:00:00.010Z"
@@ -501,9 +506,9 @@ No attempts returns an empty array. Raw request hashes and idempotency keys are 
 
 Booking detail, history, calendar, and administrator responses expose:
 
-- `paymentStatus`: null when no attempt exists, otherwise the latest PENDING, SUCCEEDED or FAILED result. Failed attempts can be retried; a Cancelled/Completed booking can retain SUCCEEDED history.
-- `paymentIntegrationAvailable`: whether mock operations are enabled in this running non-production API.
-- `paymentProvider`: MOCK for a recorded attempt or enabled mock integration, otherwise null.
+- `paymentStatus`: null when no attempt exists; otherwise PENDING, SUCCEEDED, REQUIRES_REVIEW or FAILED (unresolved attempts first, then successful payment, then review/failure history). Failed attempts can be retried; a Cancelled/Completed booking can retain SUCCEEDED history.
+- `paymentIntegrationAvailable`: whether sandbox LiqPay is configured or local mock operations are enabled.
+- `paymentProvider`: provider of the selected recorded attempt, otherwise LIQPAY_TEST when configured, MOCK when enabled, or null.
 
 These fields supplement the existing contract; booking status and payment status are separate. A payment can succeed while the booking is subsequently cancelled by an administrator. No automatic refund or real payment receipt is produced.
 
@@ -524,10 +529,124 @@ Each recurring occurrence is a separate booking with its own amount/deadline and
 | 409 | BOOKING_CHANGED | Workspace moved during the request; refresh and retry |
 | 503 | RESOURCE_BUSY | Retry the same request/key after Retry-After |
 
-## Payment integration boundary and remaining scope
+## LiqPay test checkout (TC-11)
 
-The mock provider is isolated from API validation and booking transactions. Real LiqPay requests, signed callbacks, asynchronous pending/reconciliation, external transaction identifiers, retries across provider outages and late-payment reconciliation are not implemented. A later real integration must preserve server price snapshots, provider authentication, idempotency, atomic booking confirmation, immutable completed results, original hold deadlines and terminal booking guards. An expired/cancelled slot must never be reopened by a late notification.
+This is the official **test-key hosted-checkout protocol**, distinct from the local mock endpoint. No live-payment mode is provided. Obtain a merchant account and its **sandbox public/private key pair** from LiqPay. Both keys must begin with `sandbox_`; a live key, missing credentials or invalid public URLs yields 503 for payment operations, without preventing startup or health checks.
 
-This release does not implement client editing/cancellation, real refunds, meeting-room management, client analytics, Google integrations, email/native push notifications, or backup/restore automation. HTTPS deployment, operator-managed backups/retention, external-service integration and load/acceptance testing remain operational work. The API's durable notification events include BOOKING_CREATED (administrator creation), BOOKING_UPDATED, BOOKING_CANCELLED, BOOKING_REASSIGNED, BOOKING_EXPIRED, BOOKING_COMPLETED, PAYMENT_SUCCEEDED and PAYMENT_FAILED.
+Sources reviewed on 2026-11-01: [checkout](https://www.liqpay.ua/doc/api/internet_acquiring/checkout), [callback](https://www.liqpay.ua/doc/api/callback), [test keys/cards](https://www.liqpay.ua/uk/doc/api/testing). The current specification uses **version 7** and `base64(SHA3-256(private_key + data + private_key))`, with the binary digest. Older SHA-1/version-3 snippets remain on the official pages; this implementation follows the current prose and v7 signature example, with no automatic downgrade.
 
-For setup, isolated automated testing and administrator provisioning, see [README](../README.md). For runnable request examples, see [requests.http](requests.http).
+### Configuration and initiation
+
+Configure LIQPAY_TEST_ENABLED=true, LIQPAY_PUBLIC_KEY and LIQPAY_PRIVATE_KEY. PUBLIC_API_URL must be a public HTTPS API origin; it determines the callback address. Optional LIQPAY_RESULT_URL is an HTTPS frontend return page without credentials, query or fragment. The return page is navigation only, never evidence that payment succeeded. Keep private keys and complete signed checkout/callback data out of logs, Git, storage and analytics.
+
+`POST /api/bookings/:id/payments/liqpay` requires a verified Client Bearer token, an owned eligible PENDING_PAYMENT booking, an empty JSON object, and a UUID Idempotency-Key:
+
+```http
+POST /api/bookings/BOOKING_UUID/payments/liqpay
+Authorization: Bearer CLIENT_TOKEN
+Idempotency-Key: 359b80f0-07cf-43b3-9e56-0e096d493071
+Content-Type: application/json
+
+{}
+```
+
+200:
+
+```json
+{
+  "data": {
+    "payment": {
+      "id":"PAYMENT_UUID","bookingId":"BOOKING_UUID","tariffId":"TARIFF_UUID",
+      "provider":"LIQPAY_TEST","providerReference":null,"providerPaymentId":null,
+      "amount":"150.25","currency":"UAH","status":"PENDING",
+      "reconciliationRequired":false,"createdAt":"2026-11-01T10:00:00.000Z","completedAt":null
+    },
+    "booking":{"id":"BOOKING_UUID","status":"PENDING_PAYMENT"},
+    "checkout":{
+      "url":"https://www.liqpay.ua/api/3/checkout",
+      "method":"POST",
+      "fields":{"data":"BASE64_JSON","signature":"BASE64_SHA3_256"}
+    }
+  }
+}
+```
+
+Submit the two returned fields as an HTML form POST (`application/x-www-form-urlencoded`) to checkout.url, opening LiqPay's hosted page. React/Android must use a browser/hosted checkout flow, not submit card details to WorkStudio. Form encoding must preserve base64 plus signs, slashes and padding; use a form encoder, not string concatenation.
+
+The signed data contains the saved booking amount/currency, action=pay, version=7, the sandbox public key, order_id=`workstudio_PAYMENT_UUID`, server_url, optional result_url, language=uk, and the original payment deadline as UTC expired_date. No customer/card data or private key is included. The backend does not call the external checkout during initiation and does not claim provider acceptance at this point.
+
+Same key/booking/provider returns the same pending attempt and checkout fields. A different key cannot create another pending LiqPay checkout for that booking (409 PAYMENT_ATTEMPT_PENDING). A failed finalized attempt can be retried with a new key before the original deadline. A finished attempt's key cannot reopen checkout. Reusing a key for another booking/provider returns IDEMPOTENCY_KEY_REUSED. Persist only the operation key/payment ID needed for retries, not signed checkout data. Do not rotate merchant keys while attempts are unresolved; saved public key/URLs are immutable, and a changed public key returns PAYMENT_CONFIGURATION_CHANGED.
+
+Each recurring occurrence is paid separately using its booking ID and snapshotted price. No aggregate series charge or automatic confirmation is performed. Pending LiqPay attempts prevent a competing local mock confirmation.
+
+### Callback contract
+
+`POST /api/payments/liqpay/callback` is the only form-encoded API exception. LiqPay sends exactly `data` and `signature`. It uses cryptographic authentication, not a user Bearer token. Requests are bounded to 64 KB/two form parameters, data to 48,000 characters, and 600 requests/minute per IP. JSON callback bodies are rejected.
+
+The server verifies the signature over the exact base64 data using constant-time comparison **before** decoding payment fields. It then checks v7/pay, sandbox merchant, saved attempt/order reference, provider payment ID, amount, UAH currency, tariff, owner and booking. Unknown fields (including card/customer tokens) are discarded. Only the payload hash, payment reference, provider status/transaction ID, receipt time and processing disposition are retained in append-only PaymentCallback records. No full signed payload is stored or logged.
+
+After transaction commit, valid matched callbacks receive `200 {"data":{"received":true}}`. The response also acknowledges valid results requiring manual review; it does not imply booking confirmation.
+
+| Verified provider result | Payment and booking behavior |
+| --- | --- |
+| success; booking still payable | Payment SUCCEEDED and booking CONFIRMED atomically; increment booking version; one PAYMENT_SUCCEEDED notification |
+| error, failure or reversed while attempt pending | Payment FAILED; booking unchanged; one PAYMENT_FAILED notification; eligible new-key retry before the same deadline |
+| Documented processing/authentication-wait statuses (including 3ds_verify) | Payment stays PENDING; no confirmation/deadline extension |
+| success after timeout, cancellation, completion or loss of eligibility | Payment REQUIRES_REVIEW; booking remains terminal/unchanged; no successful-payment notification |
+| Unknown status, including an unsupported legacy status | REQUIRES_REVIEW; no invented success |
+| Identical callback again | Original record reused; no repeated confirmation/notification |
+| Same terminal result with different delivery metadata | IGNORED callback record; completed payment unchanged |
+| Contradictory result after a terminal payment (e.g. success after FAILED or reversed after SUCCEEDED) | Completed payment remains immutable; append REQUIRES_REVIEW observation; notify once per attempt |
+
+Workspace/booking locks serialize callbacks with expiry, administrator changes, initiation and other payment requests. Eligibility is checked using database time. Database constraints independently prevent duplicate successful payments, competing pending checkouts and terminal booking resurrection. A deadline crossing during processing rolls back the incomplete transaction and returns 503 RESOURCE_BUSY; replay the same callback.
+
+An unpaid booking still expires to CANCELLED/PAYMENT_TIMEOUT even if no callback arrives. An unresolved provider attempt can remain PENDING in payment history; absence of a provider result is not fabricated into failure.
+
+### Reconciliation and history
+
+The existing `GET /api/bookings/:id/payments` remains private to the owner. It additionally returns providerPaymentId and reconciliationRequired. The latter is true for REQUIRES_REVIEW payments or any contradictory callback requiring review; a historical FAILED or SUCCEEDED payment can therefore require review without changing its immutable financial result. Booking views expose PENDING/SUCCEEDED/REQUIRES_REVIEW/FAILED, and choose an unresolved attempt first, then a success, then review/failure history.
+
+A reviewer compares the saved provider transaction/order IDs and callback metadata with the merchant dashboard. No automatic refund, manual financial-resolution API, live charge, status-query polling or signed-callback replay tool is supplied. Resolve the discrepancy operationally; never edit immutable history or reopen a released interval. If the user still needs a reservation, create a new booking through current availability checks. Initiation is blocked while an attempt/observation requires review.
+
+| HTTP | Additional code / behavior |
+| --- | --- |
+| 400 | INVALID_PAYMENT_SIGNATURE, INVALID_PAYMENT_CALLBACK, PAYMENT_REFERENCE_MISMATCH; invalid proof/fields, no payment or booking mutation |
+| 401/403 | Initiation uses normal UNAUTHENTICATED, FORBIDDEN, EMAIL_NOT_VERIFIED |
+| 404 | PAYMENT_NOT_FOUND for a signed unknown attempt; initiation conceals other clients' bookings as BOOKING_NOT_FOUND |
+| 409 | PAYMENT_ATTEMPT_PENDING, PAYMENT_ATTEMPT_FINISHED, PAYMENT_REQUIRES_REVIEW, PAYMENT_CONFIGURATION_CHANGED, PAYMENT_REFERENCE_MISMATCH, IDEMPOTENCY_KEY_REUSED, BOOKING_NOT_PAYABLE, PAYMENT_WINDOW_EXPIRED, BOOKING_CHANGED |
+| 413/415/429 | Oversized/excess form parameters, wrong media type, or callback IP limit |
+| 503 | PAYMENTS_DISABLED / PAYMENTS_NOT_CONFIGURED; other API functions stay available |
+| 503 | RESOURCE_BUSY with Retry-After: retry the same initiation key or callback payload |
+
+### QA procedure for TC-11
+
+1. Apply migrations to the intended deployment database before deploying the updated application. Keep MOCK_PAYMENTS_ENABLED=false on Render.
+2. Register a LiqPay merchant and configure its actual sandbox keys, LIQPAY_TEST_ENABLED=true, and PUBLIC_API_URL=https://workstudio-api.onrender.com. Use a reachable public HTTPS callback; localhost cannot receive provider callbacks.
+3. Register/verify/login a client, choose a tariff and create a future booking. In preview email mode, use the returned confirmation link; no email is delivered.
+4. Initiate checkout and submit the returned fields to LiqPay. Enter only LiqPay's documented test-card details **on its hosted page**.
+5. After checkout, GET the booking/payment history until the signed provider callback is processed. Confirm amount, provider ID and status; the frontend return URL alone must never mark it paid.
+6. Repeat with LiqPay's failure test case. The booking stays Pending Payment until retry success or original expiry. Exercise duplicate delivery, concurrent callbacks and late-result review in the offline suite without exposing a real private key.
+7. Record the real sandbox result/schema for the merchant account. Automated tests use generated test-double keys and signed fixtures, not merchant transactions; they do not verify hosted checkout, callback delivery, merchant activation or availability.
+
+## TC-08: sessions and frontend responsibilities
+
+Backend behavior is complete: successful login creates a database-backed JWT session; wrong credentials return generic 401 INVALID_CREDENTIALS; protected endpoints validate JWT signature/expiry, stored absolute expiry, inactivity timeout and logout invalidation. Invalid/expired sessions return `401 {"error":{"code":"UNAUTHENTICATED",...}}`, with WWW-Authenticate: Bearer and **no HTTP redirect**. A valid Client calling an administrator operation receives 403 FORBIDDEN; an Administrator is permitted.
+
+The inspected React code remains a demo: AuthPage calls a local onLogin handler without authenticating; App stores ws-demo-user in localStorage and exposes /admin without a role guard; services/api.ts throws generic errors and has no central 401 handler. TC-08's expired-session navigation is therefore **frontend work required**, not a backend redirect.
+
+Frontend implementation contract:
+
+- Authenticate with POST /auth/login; attach the returned Bearer token to protected requests. Load /auth/me (or /admin/session for the administrator app) on restoration; do not trust local role assertions.
+- Centralize protected-request 401 handling: clear token/user/private cached state, stop polling, discard the failed action, and navigate once to /login with history replacement. Preserve only a validated internal return path if desired. Do not automatically replay a mutation after signing in.
+- A 401 INVALID_CREDENTIALS from the login form displays the generic error on that form; it should not trigger a navigation loop.
+- A protected-request 403 keeps the authenticated session and displays permission/verification guidance. Do not treat it as expired authentication.
+- Guard administrator routes during initial loading and subsequent navigation; unauthenticated users go to /login and non-administrators see access denied. Server-side RBAC remains authoritative.
+- Handle logout through POST /auth/logout and clear local state. Optional expiry timers improve UX; every server 401 still requires the central handler.
+
+QA can test with a separate demonstration instance using short SESSION_TTL_MINUTES/SESSION_IDLE_MINUTES, then leave an administrator inactive and perform a protected action. Verify the API's 401 JSON first and navigation after frontend integration. Never change shared deployment timeouts just to run a test without coordinating with the team. Offline tests cover expired JWTs, valid JWTs with expired database sessions, idle timeout, logout, generic login errors, 401 without Location, and role 403/administrator success.
+
+## Remaining integration scope
+
+Live payments, refunds, automatic status reconciliation/polling, meeting rooms, client analytics, Google integrations and native/email booking notifications remain outside this implementation. Core durable notifications now include PAYMENT_REQUIRES_REVIEW. Email previews do not prove inbox ownership and are for the university demonstration, not real customer verification.
+
+For Render configuration and deployment limitations, see [README](../README.md). Runnable requests are in [requests.http](requests.http).

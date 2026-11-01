@@ -24,3 +24,17 @@ test("facility timestamps round-trip and reject missing or ambiguous DST times",
   assert.throws(() => localInstant("2027-03-28", "03:30"), /missing or ambiguous/);
   assert.throws(() => localInstant("2027-10-31", "03:30"), /missing or ambiguous/);
 });
+
+test("Render production preview email accepts disabled or missing LiqPay configuration without SMTP", () => {
+  for (const enabled of ["false", "true"]) {
+    const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", "await import('./src/config/env.ts')"], {
+      env: { ...process.env, NODE_ENV: "production", DATABASE_URL: "postgresql://placeholder:placeholder@localhost/workstudio_db",
+        HOST: "0.0.0.0", MOCK_PAYMENTS_ENABLED: "false", EMAIL_TRANSPORT: "preview",
+        SMTP_HOST: "", SMTP_FROM: "", SMTP_USER: "", SMTP_PASSWORD: "",
+        LIQPAY_TEST_ENABLED: enabled, LIQPAY_PUBLIC_KEY: "", LIQPAY_PRIVATE_KEY: "",
+        PUBLIC_API_URL: "https://workstudio-api.onrender.com", CORS_ORIGINS: "https://example.com", TRUST_PROXY_HOPS: "1" },
+      encoding: "utf8", windowsHide: true,
+    });
+    assert.equal(child.status, 0, "Production configuration unexpectedly required SMTP or LiqPay keys.");
+  }
+});
