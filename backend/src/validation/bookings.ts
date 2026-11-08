@@ -14,6 +14,7 @@ export const cancelSchema = z.strictObject({ version: versionSchema, confirm: z.
 export const availabilitySchema = z.strictObject({ date: dateSchema.optional(), startTime: timeSchema.optional(), endTime: timeSchema.optional() })
   .refine(value => !!value.startTime === !!value.endTime, "Supply both startTime and endTime.")
   .refine(value => !value.startTime || !!value.date, "Supply date when requesting an interval.");
+export const availableSlotsSchema = z.strictObject({ date: dateSchema });
 export const listShape = {
   fromDate: dateSchema.optional(), toDate: dateSchema.optional(),
   status: z.enum(["PENDING_PAYMENT", "CONFIRMED", "COMPLETED", "CANCELLED"]).optional(),

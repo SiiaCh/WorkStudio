@@ -2,11 +2,12 @@ import type { Request, RequestHandler } from "express";
 import * as catalog from "../services/catalog.js";
 import * as status from "../services/workspace-status.js";
 import { availability } from "../services/availability.js";
+import { availableSlots } from "../services/available-slots.js";
 import {
   idSchema, operationKeySchema, workspaceCreateSchema, workspaceUpdateSchema,
   tariffCreateSchema, tariffUpdateSchema, deleteSchema, statusSchema,
 } from "../validation/catalog.js";
-import { availabilitySchema } from "../validation/bookings.js";
+import { availableSlotsSchema, availabilitySchema } from "../validation/bookings.js";
 
 export const operationKey = (req: Request) => operationKeySchema.parse(req.get("Idempotency-Key"));
 export const resourceId = (req: Request) => idSchema.parse(req.params.id);
@@ -14,6 +15,11 @@ export const workspaces: RequestHandler = async (_req, res) => { res.json({ data
 export const workspace: RequestHandler = async (req, res) => { res.json({ data: await catalog.getWorkspace(resourceId(req)) }); };
 export const tariffs: RequestHandler = async (_req, res) => { res.json({ data: await catalog.listTariffs() }); };
 export const availabilityQuery: RequestHandler = async (req, res) => { res.json({ data: await availability(availabilitySchema.parse(req.query)) }); };
+export const availableSlotsQuery: RequestHandler = async (req, res) => {
+  const id = resourceId(req);
+  const input = availableSlotsSchema.parse(req.query);
+  res.json({ data: await availableSlots(id, input.date) });
+};
 export const createWorkspace: RequestHandler = async (req, res) => {
   res.status(201).json({ data: await catalog.createWorkspace(req.auth!.userId, operationKey(req), workspaceCreateSchema.parse(req.body)) });
 };

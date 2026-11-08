@@ -31,7 +31,8 @@ app.use("/api/payments/liqpay/callback", liqpayCallbackRouter);
 const generalLimit = ipLimit(300, 15 * 60_000);
 app.use((req, res, next) => {
   // Polling reads have their own limit, sized for shared coworking network addresses.
-  if (req.method === "GET" && ["/api/workspaces/availability", "/api/notifications"].includes(req.path.replace(/\/$/, ""))) return next();
+  const path = req.path.replace(/\/$/, "");
+  if (req.method === "GET" && (["/api/workspaces/availability", "/api/notifications"].includes(path) || /^\/api\/workspaces\/[^/]+\/available-slots$/.test(path))) return next();
   return generalLimit(req, res, next);
 });
 app.use(requireJson);

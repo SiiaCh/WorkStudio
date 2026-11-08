@@ -6,6 +6,7 @@ import { ipLimit } from "../middleware/security.js";
 export const workspaceRouter = Router();
 workspaceRouter.get("/", controller.workspaces);
 workspaceRouter.get("/availability", ipLimit(12000, 60_000), controller.availabilityQuery);
+workspaceRouter.get("/:id/available-slots", ipLimit(12000, 60_000), controller.availableSlotsQuery);
 workspaceRouter.get("/:id", controller.workspace);
 
 export const tariffRouter = Router();
