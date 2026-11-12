@@ -1,0 +1,299 @@
+# Manual examples for an HTTP client. Replace placeholders from actual responses.
+# Development loopback only; use HTTPS in deployment.
+@base = http://127.0.0.1:3000/api
+@token = REPLACE_WITH_JWT_FROM_LOGIN
+@verificationToken = REPLACE_WITH_64_HEX_CHARACTERS
+
+### Health: 200 when connected
+GET {{base}}/health
+
+### Register: 201; public role is always CLIENT
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name":"QA Client","email":"qa.client@example.com","password":"WorkStudio-example-password!"}
+
+### Verification: 200 once; replay 400
+POST {{base}}/auth/verify-email
+Content-Type: application/json
+
+{"token":"{{verificationToken}}"}
+
+### Resend: 202, previous token invalidated
+POST {{base}}/auth/resend-verification
+Content-Type: application/json
+
+{"email":"qa.client@example.com"}
+
+### Login: 200; copy data.accessToken into token above
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email":"qa.client@example.com","password":"WorkStudio-example-password!"}
+
+### Own profile: 200 with active token
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### Administrator session: CLIENT gets 403; ADMINISTRATOR gets 200
+GET {{base}}/admin/session
+Authorization: Bearer {{token}}
+
+### Logout current session: 200; subsequent me request gets 401
+POST {{base}}/auth/logout
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### Reject public privilege escalation: 400
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name":"QA Client","email":"qa.other@example.com","password":"WorkStudio-example-password!","role":"ADMINISTRATOR"}
+
+### Workspaces, tariffs and bookings
+# Use real UUIDs from responses and a future facility-local date.
+# Each {{$guid}} creates a fresh operation key. For a deliberate retry, retain the SAME UUID.
+@workspaceId = REPLACE_WITH_WORKSPACE_UUID
+@alternativeWorkspaceId = REPLACE_WITH_ALTERNATIVE_UUID
+@tariffId = REPLACE_WITH_TARIFF_UUID
+@bookingId = REPLACE_WITH_BOOKING_UUID
+@clientId = REPLACE_WITH_CLIENT_UUID
+@notificationId = REPLACE_WITH_NOTIFICATION_UUID
+@adminToken = REPLACE_WITH_ADMINISTRATOR_JWT
+@bookingDate = 2026-11-02
+@recordVersion = 1
+
+### Public workspace/map catalog
+GET {{base}}/workspaces
+
+### Availability for selected local interval (Europe/Kyiv by default)
+GET {{base}}/workspaces/availability?date={{bookingDate}}&startTime=10:00&endTime=11:00
+
+### Available-until from the selected date's opening time (or now for today)
+GET {{base}}/workspaces/availability?date={{bookingDate}}
+
+### Client tariff list
+GET {{base}}/tariffs
+Authorization: Bearer {{token}}
+
+### Administrator: create workspace (always FREE)
+POST {{base}}/admin/workspaces
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"name":"Desk A1","type":"Desk","location":"Main hall, zone A","description":"Desk by the window","mapPosition":{"x":0.25,"y":0.40}}
+
+### Administrator: edit workspace catalog fields, using latest version
+PATCH {{base}}/admin/workspaces/{{workspaceId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"description":"Desk with monitor"}
+
+### Administrator: create fixed-price UAH tariff
+POST {{base}}/admin/tariffs
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"name":"Standard reservation","price":"150.00"}
+
+### Administrator: change tariff price (old booking snapshots remain unchanged)
+PATCH {{base}}/admin/tariffs/{{tariffId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"price":"180.00"}
+
+### Verified client: confirm and create a Pending Payment hold
+POST {{base}}/bookings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","date":"{{bookingDate}}","startTime":"10:00","endTime":"11:00","confirm":true}
+
+### Client: own booking only (another client's ID returns 404)
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Client history (newest booking first)
+GET {{base}}/bookings/history?page=1&pageSize=25
+Authorization: Bearer {{token}}
+
+### Client history filtered by agreed timeout terminal status
+GET {{base}}/bookings/history?status=CANCELLED
+Authorization: Bearer {{token}}
+
+### Client calendar (default current month; supply local date bounds for another period)
+GET {{base}}/bookings/calendar
+Authorization: Bearer {{token}}
+
+### Preview recurrence; creates no holds
+POST {{base}}/bookings/recurring/preview
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","fromDate":"2026-11-02","toDate":"2026-11-13","weekdays":[1,3,5],"startTime":"10:00","endTime":"11:00"}
+
+### Confirm whole series, explicitly accepting any proposed alternative
+# Update the alternative date/desk from the preview; omit alternatives when none are needed.
+POST {{base}}/bookings/recurring
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","fromDate":"2026-11-02","toDate":"2026-11-13","weekdays":[1,3,5],"startTime":"10:00","endTime":"11:00","alternatives":[{"date":"2026-11-04","workspaceId":"{{alternativeWorkspaceId}}"}],"confirm":true}
+
+### Administrator: filtered booking list
+GET {{base}}/admin/bookings?userId={{clientId}}&page=1&pageSize=25
+Authorization: Bearer {{adminToken}}
+
+### Administrator: create on behalf of an email-verified client
+POST {{base}}/admin/bookings
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"userId":"{{clientId}}","workspaceId":"{{workspaceId}}","tariffId":"{{tariffId}}","date":"{{bookingDate}}","startTime":"14:00","endTime":"15:00","confirm":true}
+
+### Administrator: edit booking, preserving saved price and original payment deadline
+PATCH {{base}}/admin/bookings/{{bookingId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"workspaceId":"{{workspaceId}}","date":"{{bookingDate}}","startTime":"15:00","endTime":"16:00","version":{{recordVersion}},"confirm":true}
+
+### Administrator: cancel an active booking
+POST {{base}}/admin/bookings/{{bookingId}}/cancel
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Administrator: inspect affected bookings before setting Unavailable
+GET {{base}}/admin/workspaces/{{workspaceId}}/affected-bookings
+Authorization: Bearer {{adminToken}}
+
+### Administrator: atomic Unavailable resolution
+# Include one resolution for EVERY affected booking returned above.
+PATCH {{base}}/admin/workspaces/{{workspaceId}}/status
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"status":"UNAVAILABLE","confirm":true,"resolutions":[{"bookingId":"{{bookingId}}","action":"REASSIGN","workspaceId":"{{alternativeWorkspaceId}}"}]}
+
+### Administrator: Occupied describes current use and leaves bookings unchanged
+PATCH {{base}}/admin/workspaces/{{workspaceId}}/status
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"status":"OCCUPIED"}
+
+### Administrator: delete only after all current/upcoming active bookings are resolved
+DELETE {{base}}/admin/workspaces/{{workspaceId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Administrator: logically delete tariff (409 if any payment references it)
+DELETE {{base}}/admin/tariffs/{{tariffId}}
+Authorization: Bearer {{adminToken}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"version":{{recordVersion}},"confirm":true}
+
+### Client-owned durable notifications
+GET {{base}}/notifications?page=1&pageSize=25
+Authorization: Bearer {{token}}
+
+### Client: acknowledge own notification
+POST {{base}}/notifications/{{notificationId}}/read
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{}
+
+### Mock payments: explicit MOCK_PAYMENTS_ENABLED=true; restart first
+# Use an OWN Pending Payment booking before its original deadline.
+# Scenario selects a simulation only. Never submit card details, price or status.
+# Keep the same UUID for a network retry; change it for a NEW attempt.
+@paymentKey = 9d9a8210-499d-4430-9a9a-5b8127a00591
+
+### Simulate failure: 200 FAILED; booking remains Pending Payment
+POST {{base}}/bookings/{{bookingId}}/mock-payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{$guid}}
+Content-Type: application/json
+
+{"scenario":"failure"}
+
+### Simulate success: 200 SUCCEEDED and atomic confirmation
+# Repeating this SAME request/key returns the original result without charging/confirming again.
+POST {{base}}/bookings/{{bookingId}}/mock-payments
+Authorization: Bearer {{token}}
+Idempotency-Key: {{paymentKey}}
+Content-Type: application/json
+
+{"scenario":"success"}
+
+### Read current booking/version after a payment response or retry
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Own payment attempts, newest first (other client's booking returns 404)
+GET {{base}}/bookings/{{bookingId}}/payments
+Authorization: Bearer {{token}}
+
+### Official LiqPay TEST checkout (distinct from the local mock)
+# On Render use https://workstudio-api.onrender.com/api as base.
+# Requires LIQPAY_TEST_ENABLED=true plus BOTH actual sandbox_ keys on the backend.
+# Own verified-client booking, still pending and before its unchanged deadline.
+@liqpayOperationKey = 359b80f0-07cf-43b3-9e56-0e096d493071
+
+### Initiate checkout; same key retries the same pending attempt
+POST {{base}}/bookings/{{bookingId}}/payments/liqpay
+Authorization: Bearer {{token}}
+Idempotency-Key: {{liqpayOperationKey}}
+Content-Type: application/json
+
+{}
+
+# Submit data.checkout.fields as a browser form POST to data.checkout.url.
+# Do not send card information to WorkStudio, log signed data, or mark paid after navigation.
+# Use official test cards ONLY on LiqPay's hosted test page.
+# Use a NEW operation key for a new eligible attempt after a FAILED result.
+
+### Poll actual booking state after returning from the provider
+GET {{base}}/bookings/{{bookingId}}
+Authorization: Bearer {{token}}
+
+### Private payment history, including providerPaymentId and reconciliationRequired
+GET {{base}}/bookings/{{bookingId}}/payments
+Authorization: Bearer {{token}}
+
+### Provider callback format only: normally delivered by LiqPay, no client Bearer token
+# A real valid signature is required. Never manufacture successful results in the frontend.
+# These placeholders MUST be application/x-www-form-urlencoded encoded:
+# percent-encode +, / and = in the original base64 strings.
+@callbackDataUrlEncoded = REPLACE_WITH_URL_ENCODED_PROVIDER_DATA
+@callbackSignatureUrlEncoded = REPLACE_WITH_URL_ENCODED_PROVIDER_SIGNATURE
+POST {{base}}/payments/liqpay/callback
+Content-Type: application/x-www-form-urlencoded
+
+data={{callbackDataUrlEncoded}}&signature={{callbackSignatureUrlEncoded}}
+
+### TC-08: with expired/invalid token expect 401 JSON, no Location redirect
+# Frontend clears authentication and navigates to /login; it preserves login on role 403.
+GET {{base}}/admin/session
+Authorization: Bearer {{token}}

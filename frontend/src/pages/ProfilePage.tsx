@@ -1,0 +1,10 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { LogOut, MailCheck } from "lucide-react";
+import { apiRequest } from "../services/api";
+import type { User } from "../types";
+export default function ProfilePage({ user, onLogout }: { user: User | null; onLogout: () => void }) {
+  const [message,setMessage]=useState(""); const [error,setError]=useState(""); const [busy,setBusy]=useState(false);
+  async function resend(){if(!user)return;setBusy(true);setMessage("");setError("");try{const r=await apiRequest<{message:string;emailDelivery?:{message:string;verificationUrl?:string}}>("/auth/resend-verification",{method:"POST",body:JSON.stringify({email:user.email})});setMessage(r.emailDelivery?.verificationUrl?`${r.emailDelivery.message} Development link: ${r.emailDelivery.verificationUrl}`:r.emailDelivery?.message??r.message);}catch(e){setError(e instanceof Error?e.message:"Could not request another email.");}finally{setBusy(false);}}
+  return <><header className="page-header"><div><p className="eyebrow">ACCOUNT</p><h1>Your profile</h1><p className="muted">Manage your WorkStudio account.</p></div></header><section className="profile-card"><div className="profile-avatar">{user?.name?.[0]?.toUpperCase()??"G"}</div><h2>{user?.name??"Guest user"}</h2><p className="muted">{user?.email??"You are not signed in."}</p>{user?<><p className="notice">Role: {user.role}</p>{user.emailVerifiedAt?<p className="notice"><MailCheck size={16}/> Email address confirmed.</p>:<><p className="form-error">Your email address is not confirmed. You cannot create bookings until confirmation.</p><button className="button primary" type="button" onClick={resend} disabled={busy}>{busy?"Sending…":"Resend confirmation email"}</button></>}{message&&<p className="notice" role="status">{message}</p>}{error&&<p className="form-error" role="alert">{error}</p>}<button className="button outline" type="button" onClick={onLogout}><LogOut size={16}/> Sign out</button></>:<Link className="button primary inline-button" to="/login">Sign in</Link>}</section></>;
+}
