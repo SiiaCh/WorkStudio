@@ -53,23 +53,3 @@ export function alternativesFor(snapshot: Awaited<ReturnType<typeof conflictSnap
 export async function notifyBooking(tx: Tx, booking: { id: string; userId: string }, event: string, message: string) {
   await tx.notification.create({ data: { userId: booking.userId, bookingId: booking.id, event, message } });
 }
-export function calculateBookingAmount(
-  tariff: { price: Prisma.Decimal; unit: "HOUR" | "DAY" | "WEEK" },
-  interval: Interval
-) {
-  const durationMs = interval.endsAt.getTime() - interval.startsAt.getTime();
-
-  if (durationMs <= 0) {
-    throw new AppError(400, "INVALID_BOOKING_INTERVAL", "Booking duration must be positive.");
-  }
-
-  const unitMs = {
-    HOUR: 60 * 60 * 1000,
-    DAY: 24 * 60 * 60 * 1000,
-    WEEK: 7 * 24 * 60 * 60 * 1000,
-  }[tariff.unit];
-
-  const units = Math.ceil(durationMs / unitMs);
-
-  return tariff.price.mul(units);
-}

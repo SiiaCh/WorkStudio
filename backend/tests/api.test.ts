@@ -223,6 +223,27 @@ describe("HTTP integration", { concurrency: false }, () => {
       await assert.rejects(prisma.booking.update({ where: { id: completed.id }, data: { status: "CONFIRMED" } }));
     } finally { await stop(); }
   });
+  test("fixed occurrence pricing and public free ranges preserve integration contracts", async () => {
+    const { workspace, tariff } = await catalog(); // Existing {name, price} request, no unit.
+    const b = await booking(workspace, tariff, { endTime: "11:01" });
+    assert.equal(b.amount, "150.00");
+    assert.equal((await pay(b.id)).status, 200);
+    const path = "/workspaces/" + workspace.id + "/available-slots?date=" + date;
+    const ranges = await ok(path);
+    assert.deepEqual(ranges.availableRanges.map((r: any) => [r.startTime, r.endTime]), [["08:00", "10:00"], ["11:01", "22:00"]]);
+    const publicJson = JSON.stringify(ranges);
+    for (const privateId of [b.id, ownerId, tariff.id]) assert.equal(publicJson.includes(privateId), false);
+    await booking(workspace, tariff, { startTime: "11:01", endTime: "12:02" });
+    assert.deepEqual((await ok(path)).availableRanges.map((r: any) => [r.startTime, r.endTime]), [["08:00", "10:00"], ["12:02", "22:00"]]);
+    const input = { workspaceId: workspace.id, tariffId: tariff.id, fromDate: addDays(date, 14), toDate: addDays(date, 21), weekdays: [weekday(date) || 7], startTime: "10:00", endTime: "11:01" };
+    const preview = await ok("/bookings/recurring/preview", { token: client, method: "POST", body: input });
+    assert.equal(preview.totalAmount, "300.00");
+    const series = await ok("/bookings/recurring", { token: client, method: "POST", body: { ...input, confirm: true } }, 201);
+    assert.equal(series.totalAmount, "300.00");
+    assert.equal(series.bookings.length, 2);
+    for (const occurrence of series.bookings) assert.equal(occurrence.amount, "150.00");
+    await error("/workspaces/" + workspace.id + "/available-slots?date=2027-02-30", {}, 400);
+  });
   test("recurrence is atomic and accepted alternative occurrences are independently payable", async () => {
     const { workspace, tariff } = await catalog(), alternative = (await catalog()).workspace;
     await booking(workspace, tariff);

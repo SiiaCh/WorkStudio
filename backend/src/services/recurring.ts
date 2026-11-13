@@ -1,9 +1,8 @@
-import { Prisma } from "../generated/prisma/client.js";
 import { env } from "../config/env.js";
 import { addDays, bookingInterval, weekday } from "../config/facility.js";
 import { AppError } from "../utils/errors.js";
 import type { RecurringInput } from "../validation/bookings.js";
-import { alternativesFor, blockedReason, bookingOwner, conflictSnapshot, selectedTariff, calculateBookingAmount } from "./booking-rules.js";
+import { alternativesFor, blockedReason, bookingOwner, conflictSnapshot, selectedTariff } from "./booking-rules.js";
 import { databaseNow, lockWorkspaces, transaction, type Tx } from "./transactions.js";
 import { settleBookings } from "./lifecycle.js";
 import { bookingInclude, bookingView } from "./views.js";
@@ -32,7 +31,7 @@ async function assess(tx: Tx, input: RecurringInput, items: ReturnType<typeof oc
     const reason = !workspace ? "WORKSPACE_NOT_FOUND" : item.startsAt < now ? "BOOKING_IN_PAST" : blockedReason(workspace, item, snapshot.bookings, now);
     return {
       ...item, workspaceName: workspace?.name ?? null, available: !reason, unavailableReason: reason,
-      amount: calculateBookingAmount(tariff, item).toFixed(2), currency: "UAH",
+      amount: tariff.price.toFixed(2), currency: "UAH",
       alternatives: reason ? alternativesFor(snapshot, item, now, item.workspaceId) : [],
     };
   });
@@ -45,10 +44,7 @@ export async function previewSeries(userId: string, input: RecurringInput) {
     const assessment = await assess(tx, input, items, await databaseNow(tx));
     return {
       canCreate: !assessment.conflicts.length, occurrences: assessment.proposals, conflicts: assessment.conflicts,
-      totalAmount: assessment.proposals.reduce(
-  (total, item) => total.plus(item.amount),
-  new Prisma.Decimal(0)
-).toFixed(2), currency: "UAH",
+      totalAmount: assessment.tariff.price.mul(items.length).toFixed(2), currency: "UAH",
       confirmationRequired: true, reservationCreated: false,
     };
   });
@@ -72,15 +68,12 @@ export async function createSeries(userId: string, input: RecurringInput) {
     } });
     await tx.booking.createMany({ data: assessment.proposals.map(item => ({
       userId, seriesId: series.id, workspaceId: item.workspaceId, workspaceName: item.workspaceName!,
-      tariffId: assessment.tariff.id, tariffName: assessment.tariff.name, amount: new Prisma.Decimal(item.amount),
+      tariffId: assessment.tariff.id, tariffName: assessment.tariff.name, amount: assessment.tariff.price,
       startsAt: item.startsAt, endsAt: item.endsAt, createdAt: now,
       paymentDeadline: new Date(now.getTime() + env.BOOKING_HOLD_MINUTES * 60_000),
     })) });
     const bookings = await tx.booking.findMany({ where: { seriesId: series.id }, orderBy: { startsAt: "asc" }, include: bookingInclude });
     if (bookings.length !== items.length) throw new Error("Incomplete recurring series");
-    return { series, bookings: bookings.map(bookingView), totalAmount: assessment.proposals.reduce(
-  (total, item) => total.plus(item.amount),
-  new Prisma.Decimal(0)
-).toFixed(2), currency: "UAH" };
+    return { series, bookings: bookings.map(bookingView), totalAmount: assessment.tariff.price.mul(items.length).toFixed(2), currency: "UAH" };
   });
 }

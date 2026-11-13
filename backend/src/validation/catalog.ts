@@ -14,19 +14,9 @@ export const workspaceUpdateSchema = workspaceCreateSchema.partial().extend({ ve
 export const priceSchema = z.union([z.string(), z.number().finite()]).transform(String)
   .pipe(z.string().regex(/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/, "Use a positive UAH amount with at most two decimal places."))
   .refine(value => Number(value) > 0, "Price must be positive.");
-
-export const tariffCreateSchema = z.strictObject({
-  name,
-  price: priceSchema,
-  unit: z.enum(["HOUR", "DAY", "WEEK"])
-});
-
+export const tariffCreateSchema = z.strictObject({ name, price: priceSchema });
 export const tariffUpdateSchema = tariffCreateSchema.partial().extend({ version: versionSchema })
-  .refine(
-    value => value.name !== undefined || value.price !== undefined || value.unit !== undefined,
-    "Provide at least one changed field."
-  );
-
+  .refine(value => value.name !== undefined || value.price !== undefined, "Provide at least one changed field.");
 export const deleteSchema = z.strictObject({ version: versionSchema, confirm: z.literal(true) });
 export const statusSchema = z.strictObject({
   version: versionSchema,

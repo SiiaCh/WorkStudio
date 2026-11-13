@@ -297,3 +297,10 @@ data={{callbackDataUrlEncoded}}&signature={{callbackSignatureUrlEncoded}}
 # Frontend clears authentication and navigates to /login; it preserves login on role 403.
 GET {{base}}/admin/session
 Authorization: Bearer {{token}}
+
+### Public free ranges for one workspace/day; no reservation is created
+# Flexible HH:mm intervals; no fixed duration or tariff multiplier.
+GET {{base}}/workspaces/{{workspaceId}}/available-slots?date={{bookingDate}}
+
+### Available-slots invalid date: 400 VALIDATION_ERROR
+GET {{base}}/workspaces/{{workspaceId}}/available-slots?date=2027-02-30

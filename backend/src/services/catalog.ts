@@ -52,77 +52,20 @@ export function deleteWorkspace(actorId: string, key: string, id: string, versio
     return { result: { id, deleted: true }, action: "WORKSPACE_DELETED", resourceType: "Workspace", resourceId: id, details: { before: workspaceView(workspace) } };
   });
 }
-
-export function createTariff(
-  actorId: string,
-  key: string,
-  input: { name: string; price: string; unit: "HOUR" | "DAY" | "WEEK" }
-) {
+export function createTariff(actorId: string, key: string, input: { name: string; price: string }) {
   return adminMutation(actorId, key, { operation: "tariff.create", input }, async tx => {
-    const tariff = await tx.tariff.create({
-      data: {
-        name: input.name,
-        price: new Prisma.Decimal(input.price),
-        unit: input.unit
-      }
-    });
-
-    return {
-      result: { tariff: tariffView(tariff) },
-      action: "TARIFF_CREATED",
-      resourceType: "Tariff",
-      resourceId: tariff.id,
-      details: { after: tariffView(tariff) }
-    };
+    const tariff = await tx.tariff.create({ data: { ...input, price: new Prisma.Decimal(input.price) } });
+    return { result: { tariff: tariffView(tariff) }, action: "TARIFF_CREATED", resourceType: "Tariff", resourceId: tariff.id, details: { after: tariffView(tariff) } };
   });
 }
-
-export function updateTariff(
-  actorId: string,
-  key: string,
-  id: string,
-  input: {
-    name?: string;
-    price?: string;
-    unit?: "HOUR" | "DAY" | "WEEK";
-    version: number;
-  }
-) {
+export function updateTariff(actorId: string, key: string, id: string, input: { name?: string; price?: string; version: number }) {
   return adminMutation(actorId, key, { operation: "tariff.update", id, input }, async tx => {
     await tx.$queryRaw`SELECT id FROM "Tariff" WHERE id = ${id}::uuid FOR UPDATE`;
-
-    const before = await tx.tariff.findFirst({
-      where: { id, deletedAt: null }
-    });
-
-    if (!before) {
-      throw new AppError(404, "TARIFF_NOT_FOUND", "The tariff does not exist.");
-    }
-
+    const before = await tx.tariff.findFirst({ where: { id, deletedAt: null } });
+    if (!before) throw new AppError(404, "TARIFF_NOT_FOUND", "The tariff does not exist.");
     checkVersion(before.version, input.version);
-
-    const tariff = await tx.tariff.update({
-      where: { id },
-      data: {
-        name: input.name,
-        price: input.price === undefined
-          ? undefined
-          : new Prisma.Decimal(input.price),
-        unit: input.unit,
-        version: { increment: 1 }
-      }
-    });
-
-    return {
-      result: { tariff: tariffView(tariff) },
-      action: "TARIFF_UPDATED",
-      resourceType: "Tariff",
-      resourceId: id,
-      details: {
-        before: tariffView(before),
-        after: tariffView(tariff)
-      }
-    };
+    const tariff = await tx.tariff.update({ where: { id }, data: { name: input.name, price: input.price === undefined ? undefined : new Prisma.Decimal(input.price), version: { increment: 1 } } });
+    return { result: { tariff: tariffView(tariff) }, action: "TARIFF_UPDATED", resourceType: "Tariff", resourceId: id, details: { before: tariffView(before), after: tariffView(tariff) } };
   });
 }
 export function deleteTariff(actorId: string, key: string, id: string, version: number) {

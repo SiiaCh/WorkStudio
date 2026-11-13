@@ -3,7 +3,7 @@ import { env } from "../config/env.js";
 import { bookingInterval, localParts, localInstant, addDays } from "../config/facility.js";
 import { AppError } from "../utils/errors.js";
 import type { BookingCreate } from "../validation/bookings.js";
-import { activeWhere, bookingOwner, checkWorkspace, notifyBooking, selectedTariff, calculateBookingAmount } from "./booking-rules.js";
+import { activeWhere, bookingOwner, checkWorkspace, notifyBooking, selectedTariff } from "./booking-rules.js";
 import { adminMutation, checkVersion, databaseNow, lockWorkspaces, transaction, type Tx } from "./transactions.js";
 import { refreshLifecycle, settleBookings } from "./lifecycle.js";
 import { bookingInclude, bookingView } from "./views.js";
@@ -20,7 +20,7 @@ async function createOne(tx: Tx, userId: string, input: BookingCreate) {
   const tariff = await selectedTariff(tx, input.tariffId);
   return tx.booking.create({ data: {
     userId, workspaceId: workspace.id, workspaceName: workspace.name, tariffId: tariff.id, tariffName: tariff.name,
-    amount: calculateBookingAmount(tariff, interval), ...interval, createdAt: now,
+    amount: tariff.price, ...interval, createdAt: now,
     paymentDeadline: new Date(now.getTime() + env.BOOKING_HOLD_MINUTES * 60_000),
   }, include: bookingInclude });
 }

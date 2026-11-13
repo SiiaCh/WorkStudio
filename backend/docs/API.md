@@ -239,7 +239,7 @@ Administrator updates/deletes/status changes supply the latest `version`. A stal
 
 Workspace rows are locked in UUID order for booking creation, edits, cancellations, status resolution and hold release. Conflict checks, price reads and saves share one transaction, with the exclusion constraint as the final guard. Failed operations leave no partially created booking/series or partially applied status resolution. Lock/contention timeouts return 503 RESOURCE_BUSY with Retry-After; retry administrator operations with their original idempotency key.
 
-CORS allows GET/POST/PATCH/DELETE/OPTIONS and the Idempotency-Key header for configured origins. Availability and notification polling reads have a dedicated 12,000 requests/minute per-IP limit, accommodating a shared coworking network; other request limits are listed below. Client-side authentication and privacy checks remain necessary regardless of CORS.
+CORS allows GET/POST/PATCH/DELETE/OPTIONS and the Idempotency-Key header for configured origins. Interval availability, available-slots and notification polling reads have a dedicated 12,000 requests/minute per-IP limit, accommodating a shared coworking network; other request limits are listed below. Client-side authentication and privacy checks remain necessary regardless of CORS.
 
 Non-polling requests are limited to 300 per 15 minutes per IP; login and confirmation requests share 100 per 15 minutes; registration and resend each allow 10 per hour. IP limits use process memory and reset on restart. Account login limits persist in PostgreSQL: by default, five failed attempts within a 15-minute inactivity window block login for 15 minutes. A successful login resets the counter. Session defaults are eight hours absolute expiry and 30 minutes inactivity; verification links expire after 24 hours. These values are configurable through .env.example.
 
@@ -252,6 +252,7 @@ All paths below are relative to `/api`.
 | GET | /workspaces | Public workspace catalog/map data |
 | GET | /workspaces/:id | Public non-deleted workspace |
 | GET | /workspaces/availability | Public availability, no client/booking identifiers |
+| GET | /workspaces/:id/available-slots | Public free ranges for a required local date; no private booking data |
 | GET | /tariffs | Authenticated Client or Administrator |
 | GET | /admin/workspaces | Administrator |
 | GET | /admin/workspaces/:id | Administrator |
@@ -343,6 +344,155 @@ The real facility object contains all seven weekdays and workspace objects conta
 UNAVAILABLE blocks every interval until changed. OCCUPIED blocks an interval including the current moment, but permits later free intervals. FREE does not override bookings. Pending Payment bookings block until their payment deadline; Confirmed bookings block their booked intervals. Cancelled/Completed bookings do not. Public responses contain no private client identities or booking references.
 
 The API reads live database state and uses Cache-Control: no-store. Poll this endpoint every second while the selection screen is visible to meet the SRS two-second display target under normal conditions; stop polling when hidden. No WebSocket or UI rendering is implemented. Selecting/previewing a desk **does not reserve it**. Only successful confirmed POST creation creates a hold; always handle a subsequent 409 conflict even if the last availability response was free.
+
+## Available time ranges for one workspace
+
+`GET /api/workspaces/:id/available-slots?date=YYYY-MM-DD` is public and read-only. It returns the chronological free ranges for one non-archived workspace and one facility-local day. It complements `GET /workspaces/availability`, which continues to check a particular interval; neither endpoint creates a reservation.
+
+| Parameter | Requirement |
+| --- | --- |
+| id (path) | Valid workspace UUID; unknown/archived workspaces return 404 |
+| date (query) | Required real calendar date, YYYY-MM-DD, today or later in the facility timezone |
+| Other query fields | Rejected; stepMinutes/duration/startTime/endTime are not parameters of this endpoint |
+
+Example: `GET /api/workspaces/11111111-1111-4111-8111-111111111111/available-slots?date=2026-11-10`.
+
+Illustrative 200 response for a future Tuesday, with 10:00-11:00 and 14:00-16:00 reserved:
+
+```json
+{
+  "data": {
+    "workspaceId": "11111111-1111-4111-8111-111111111111",
+    "workspaceStatus": "FREE",
+    "date": "2026-11-10",
+    "timeZone": "Europe/Kyiv",
+    "openingHours": {"open":"08:00","close":"22:00"},
+    "asOf": "2026-11-09T10:17:25.500Z",
+    "recommendedPollIntervalMs": 1000,
+    "availableRanges": [
+      {"startTime":"08:00","endTime":"10:00","startsAt":"2026-11-10T06:00:00.000Z","endsAt":"2026-11-10T08:00:00.000Z"},
+      {"startTime":"11:00","endTime":"14:00","startsAt":"2026-11-10T09:00:00.000Z","endsAt":"2026-11-10T12:00:00.000Z"},
+      {"startTime":"16:00","endTime":"22:00","startsAt":"2026-11-10T14:00:00.000Z","endsAt":"2026-11-10T20:00:00.000Z"}
+    ],
+    "unavailableReason": null,
+    "message": null
+  }
+}
+```
+
+startTime/endTime are facility-local HH:mm; startsAt/endsAt are the corresponding UTC instants. Use UTC instants to order/compare times and the configured timezone for display. asOf is the server instant used for deadline and current-day checks.
+
+Rules:
+
+- The service reuses the configured weekly schedule and timezone helpers. A null weekday is closed; openingHours is null in its response. The schedule is currently operator-configured through FACILITY_OPENING_HOURS, not an administrator API.
+- UNAVAILABLE returns no ranges. OCCUPIED excludes the current moment only; it has no inferred future release time and does not block later intervals or future days. FREE still checks bookings.
+- CONFIRMED bookings and PENDING_PAYMENT bookings whose paymentDeadline is strictly after asOf block their UTC intervals. CANCELLED, COMPLETED and expired holds do not block. Recurring occurrences follow the same rules as single bookings.
+- Relevant blocks are clipped to the permitted operating interval, sorted and merged, including adjacent/overlapping blocks. Subtract their union using half-open intervals [start,end); adjacent reservations never create a false gap.
+- Today begins at the later of opening time and the next whole minute strictly after asOf. Past time is excluded. This also avoids presenting an OCCUPIED workspace as bookable at the current instant.
+- Returned boundaries respect the existing HH:mm input precision: starts round up and ends round down to whole minutes; empty ranges are omitted. This matters for historical records with sub-minute timestamps. No 30/60-minute alignment or new duration rule is imposed.
+- A repeatable-read transaction reads workspace status and booking intervals consistently. It selects only the booking start/end fields and never exposes booking IDs, owners, payment data or counts. It does not run lifecycle cleanup or mutate expired records.
+- Responses use Cache-Control: no-store and the same 12,000/minute per-IP polling limit as interval availability. Poll only while the selection screen is active; an availability response is a snapshot, not a guaranteed hold. Booking creation still rechecks atomically and may return 409.
+
+Clients choose any valid start/end pair inside a returned range using the existing booking endpoint. A 30-minute Android selection step is optional UI behavior. This endpoint returns ranges rather than fixed-duration slots or every possible start/end combination. Tariff prices, booking snapshots and LiqPay amounts are unchanged; duration is not a price multiplier.
+
+Empty responses retain the same envelope/metadata, with availableRanges=[]:
+
+| unavailableReason | Meaning |
+| --- | --- |
+| WORKSPACE_UNAVAILABLE | Operationally unavailable; this takes priority if the facility is also closed |
+| FACILITY_CLOSED | Closed weekday, or no selectable operating time remains today |
+| NO_AVAILABLE_RANGES | The remaining operating interval has no bookable gap |
+| null | One or more ranges exist |
+
+Errors retain the existing JSON error envelope: 400 VALIDATION_ERROR for missing/invalid/duplicate query fields or malformed UUID/date; 400 DATE_IN_PAST for a past local date; 400 INVALID_LOCAL_TIME for missing/ambiguous configured opening/closing times at a timezone transition; 404 WORKSPACE_NOT_FOUND for unknown or archived workspaces; 429 TOO_MANY_REQUESTS for the polling limit; 500 INTERNAL_ERROR for an unexpected database failure.
+
+### Read-only PowerShell checks
+
+Use a separately prepared **non-production QA dataset** and a local API instance. These commands do not seed data, create bookings, change statuses/settings or initiate payments. Replace every fixture UUID/date using the QA dataset; do not create these scenarios in production just to test this endpoint. Dates below assume the prototype daily 08:00-22:00 hours; adapt expected boundaries to the fixture schedule and choose future dates.
+
+```powershell
+# From backend/, with the local server already running:
+$api = "http://127.0.0.1:3000/api"
+$date = "2026-11-10" # Replace with a future facility-local date when repeating.
+$ids = @{
+  Empty = "REPLACE_WITH_EMPTY_WORKSPACE_UUID"
+  One = "REPLACE_WITH_ONE_BOOKING_WORKSPACE_UUID"
+  Several = "REPLACE_WITH_SEVERAL_BOOKINGS_WORKSPACE_UUID"
+  Adjacent = "REPLACE_WITH_ADJACENT_BOOKINGS_WORKSPACE_UUID"
+  Full = "REPLACE_WITH_FULL_DAY_WORKSPACE_UUID"
+  Unavailable = "REPLACE_WITH_UNAVAILABLE_WORKSPACE_UUID"
+  Archived = "REPLACE_WITH_ARCHIVED_WORKSPACE_UUID"
+  ExpiredHold = "REPLACE_WITH_EXPIRED_HOLD_WORKSPACE_UUID"
+}
+function Get-FreeRanges([string]$id, [string]$day = $date) {
+  (Invoke-RestMethod "$api/workspaces/$id/available-slots?date=$day").data
+}
+
+# 1. No bookings: one range covering all operating hours.
+Get-FreeRanges $ids.Empty | ConvertTo-Json -Depth 6
+
+# 2. One 10:00-11:00 blocking booking: 08:00-10:00, 11:00-22:00.
+Get-FreeRanges $ids.One | ConvertTo-Json -Depth 6
+
+# 3. Blocks 10:00-11:00 and 14:00-16:00: three ranges as in the example.
+Get-FreeRanges $ids.Several | ConvertTo-Json -Depth 6
+
+# 4. Adjacent 10:00-11:00 and 11:00-12:00: no gap at 11:00.
+Get-FreeRanges $ids.Adjacent | ConvertTo-Json -Depth 6
+
+# 5. Full operating interval reserved: [] and NO_AVAILABLE_RANGES.
+Get-FreeRanges $ids.Full | ConvertTo-Json -Depth 6
+
+# 6. UNAVAILABLE: [] and WORKSPACE_UNAVAILABLE.
+Get-FreeRanges $ids.Unavailable | ConvertTo-Json -Depth 6
+
+# 7. Archived: expect HTTP 404 WORKSPACE_NOT_FOUND.
+Get-FreeRanges $ids.Archived
+
+# 8. Today: no range starts in the past. Before opening, use opening time;
+# after closing, expect an empty list. Test OCCUPIED here and on a future day.
+try { $zone = [TimeZoneInfo]::FindSystemTimeZoneById("Europe/Kyiv") }
+catch { $zone = [TimeZoneInfo]::FindSystemTimeZoneById("FLE Standard Time") }
+$today = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $zone).ToString("yyyy-MM-dd")
+Get-FreeRanges $ids.Empty $today | ConvertTo-Json -Depth 6
+
+# 9. Expired unpaid hold as the only booking: full future interval is free,
+# even if its database row still says PENDING_PAYMENT.
+Get-FreeRanges $ids.ExpiredHold | ConvertTo-Json -Depth 6
+
+# 10. A weekday set to null in the QA schedule: [] and FACILITY_CLOSED.
+# Conditional: if no days are closed, do not alter production configuration.
+$closedDate = "2026-11-15" # Replace with a future date closed in the QA schedule.
+Get-FreeRanges $ids.Empty $closedDate | ConvertTo-Json -Depth 6
+
+# 11. Impossible date: expect HTTP 400 VALIDATION_ERROR.
+Get-FreeRanges $ids.Empty "2027-02-30"
+
+# 12. Unknown valid UUID: expect HTTP 404 WORKSPACE_NOT_FOUND.
+Get-FreeRanges ([Guid]::NewGuid().ToString())
+
+# 13. Compare one returned range against the existing interval API.
+$ranges = Get-FreeRanges $ids.Several
+$range = $ranges.availableRanges | Select-Object -First 1
+if ($range) {
+  $query = "date=$date&startTime=$($range.startTime)&endTime=$($range.endTime)"
+  $interval = (Invoke-RestMethod "$api/workspaces/availability?$query").data
+  $interval.workspaces | Where-Object { $_.id -eq $ids.Several } |
+    Select-Object id, status, available, unavailableReason
+}
+
+# 14. Booking/recurring/pricing/payment source and DB contracts remain unchanged:
+# this local Git check should produce no output.
+git diff --name-only -- prisma src/services/bookings.ts src/services/recurring.ts src/services/payments.ts src/services/liqpay.ts src/routes/bookings.ts src/validation/catalog.ts
+# Optional existing protected GET smoke checks on QA ONLY (authentication touches its session).
+# $qaHeaders = @{ Authorization = "Bearer REPLACE_WITH_QA_CLIENT_TOKEN" }
+# Invoke-RestMethod "$api/bookings/history" -Headers $qaHeaders
+# Invoke-RestMethod "$api/bookings/OWN_QA_BOOKING_UUID/payments" -Headers $qaHeaders
+```
+
+The API uses the configured facility timezone; the PowerShell today helper above assumes Europe/Kyiv and falls back to Windows FLE Standard Time when needed. Adjust the helper if the QA facility timezone differs. Successful read checks on pre-existing data do not replace QA tests of booking/payment mutations on an isolated database.
+
+SRS v1.2 discrepancies and proposed separate corrections are tracked in [SRS-DISCREPANCIES.md](SRS-DISCREPANCIES.md).
 
 ## Booking and lifecycle examples
 

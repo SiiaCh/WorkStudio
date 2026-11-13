@@ -141,6 +141,8 @@ The server checks database connectivity and required tables before listening. Th
 | `npm run admin:create` | Provision a new administrator locally |
 | `npm test` | Migrate a fresh isolated database, run native Node tests, then remove it |
 
+Before running shared-database migrations, review [migration reconciliation notes](docs/SRS-DISCREPANCIES.md#tariff-migration-reconciliation). The retained historical tariff-unit migration is unnecessary for fixed per-occurrence pricing and must not be applied automatically. Runtime tariff queries do not use that column.
+
 ## Automated tests
 
 Run `npm test` from backend/. The configured PostgreSQL role needs CREATEDB permission and permission to enable btree_gist in a new database. The runner creates a randomly named workstudio_test_<32 hex characters> database, applies all migrations, runs TypeScript tests through Node's built-in test runner and tsx, and drops only that database afterward. It never resets, truncates or migrates workstudio_db during testing.
