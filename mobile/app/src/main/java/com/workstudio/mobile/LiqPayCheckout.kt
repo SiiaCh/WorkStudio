@@ -7,11 +7,17 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
@@ -24,12 +30,12 @@ internal data class LiqPayCheckout(val url: String, val data: String, val signat
         fun fromApiResponse(response: JSONObject): LiqPayCheckout {
             val checkout = response.getJSONObject("checkout")
             val url = checkout.getString("url")
-            require(url == "https://www.liqpay.ua/api/3/checkout") { "Невідома платіжна адреса LiqPay" }
-            require(checkout.getString("method") == "POST") { "Сервер повернув неправильний метод оплати" }
+            require(url == "https://www.liqpay.ua/api/3/checkout") { "Unknown LiqPay checkout address" }
+            require(checkout.getString("method") == "POST") { "The server returned an invalid payment method" }
             val fields = checkout.getJSONObject("fields")
             val data = fields.getString("data")
             val signature = fields.getString("signature")
-            require(data.isNotBlank() && signature.isNotBlank()) { "Неповні дані для оплати" }
+            require(data.isNotBlank() && signature.isNotBlank()) { "Incomplete payment data" }
             return LiqPayCheckout(url, data, signature)
         }
     }
@@ -47,7 +53,7 @@ internal object LiqPayOperationStore {
         val key = "booking_" + bookingId
         if (!retryFailed) prefs.getString(key, null)?.let { return it }
         val newKey = UUID.randomUUID().toString()
-        check(prefs.edit().putString(key, newKey).commit()) { "Не вдалося зберегти ключ платежу" }
+        check(prefs.edit().putString(key, newKey).commit()) { "Could not save the payment key" }
         return newKey
     }
 }
@@ -57,10 +63,18 @@ internal object LiqPayOperationStore {
 @Composable
 internal fun LiqPayCheckoutScreen(checkout: LiqPayCheckout, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
-    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        Text("LiqPay sandbox — тестова оплата")
-        Text("Повернення зі сторінки не означає успішну оплату. Результат перевіряємо через API.")
-        Button(onClick = onClose) { Text("Back to bookings / Refresh") }
+    Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF7F8FA)).padding(12.dp)) {
+        Text("LiqPay — test payment", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF151515))
+        Text("Card details are entered only on the LiqPay page. Returning from it does not mean the payment succeeded — " +
+            "the booking status is confirmed by the server after LiqPay's callback.", fontSize = 12.sp, color = Color(0xFF92400E))
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onClose,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E619C)),
+            shape = RoundedCornerShape(6.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Back to bookings · refresh status", fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.height(8.dp))
         AndroidView(
             modifier = Modifier.fillMaxWidth().weight(1f),
             factory = { context ->
