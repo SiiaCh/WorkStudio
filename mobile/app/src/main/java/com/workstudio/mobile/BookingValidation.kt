@@ -13,18 +13,18 @@ internal object BookingValidation {
     fun message(date: String, from: String, to: String,
                 now: ZonedDateTime = ZonedDateTime.now(facilityZone)): String? {
         val selectedDate = try { LocalDate.parse(date) }
-            catch (_: Exception) { return "Оберіть правильну дату." }
+            catch (_: Exception) { return "Choose a valid date." }
         val fromTime = try { LocalTime.parse(from) }
-            catch (_: Exception) { return "Оберіть правильний час початку." }
+            catch (_: Exception) { return "Choose a valid start time." }
         val toTime = try { LocalTime.parse(to) }
-            catch (_: Exception) { return "Оберіть правильний час завершення." }
+            catch (_: Exception) { return "Choose a valid end time." }
 
         if (!toTime.isAfter(fromTime)) {
-            return "Час To повинен бути пізніше за From."
+            return "\"To\" must be later than \"From\"."
         }
         val startsAt = LocalDateTime.of(selectedDate, fromTime).atZone(facilityZone)
         if (!startsAt.isAfter(now.withZoneSameInstant(facilityZone))) {
-            return "Оберіть майбутню дату й час бронювання."
+            return "Choose a future date and time."
         }
         return null
     }
