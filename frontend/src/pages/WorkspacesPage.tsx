@@ -1,10 +1,10 @@
+import { facilityNow } from "../services/facility";
 import { useMemo, useState } from "react";
 import { Search, SlidersHorizontal, Clock3, CalendarDays } from "lucide-react";
 import WorkspaceCard from "../components/WorkspaceCard";
 import type { Workspace } from "../types";
 import { apiRequest } from "../services/api";
 
-const slots = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
 
 export default function WorkspacesPage({ workspaces, onBook, date, onDateChange }: {
   workspaces: Workspace[]; onBook: (workspace: Workspace, date: string, startTime: string, endTime: string) => void;
@@ -20,14 +20,12 @@ export default function WorkspacesPage({ workspaces, onBook, date, onDateChange 
     (filter === "All" || w.status === filter) &&
     `${w.name} ${w.type} ${w.zone} ${w.description}`.toLowerCase().includes(search.toLowerCase())
   ), [workspaces, filter, search]);
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
-  const selectedStartDateTime = new Date(`${date}T${selectedStart}:00`);
+  const now = facilityNow();
+  const today = now.date;
   const pastDate = date < today;
-  const pastTime = date === today && selectedStartDateTime <= now;
-  const endSlots = slots.filter(s => s > selectedStart);
+  const pastTime = date === today && selectedStart <= now.time;
   async function requestBooking(workspace:Workspace){
-    if(pastDate||pastTime||checkingWorkspace)return;
+    if(pastDate||pastTime||selectedEnd<=selectedStart||checkingWorkspace)return;
     setCheckingWorkspace(workspace.id);setAvailabilityError("");
     try{
       const result=await apiRequest<{workspaces:Array<{id:string;available:boolean;unavailableReason:string|null}>}>(`/workspaces/availability?date=${date}&startTime=${selectedStart}&endTime=${selectedEnd}`);
@@ -44,14 +42,10 @@ export default function WorkspacesPage({ workspaces, onBook, date, onDateChange 
         <input id="booking-date" type="date" value={date} min={today} onChange={e => onDateChange(e.target.value)} required />
       </label>
       <label htmlFor="start-time"><Clock3 size={16}/> Start time
-        <select id="start-time" value={selectedStart} onChange={e => {setSelectedStart(e.target.value); if (selectedEnd <= e.target.value) setSelectedEnd(slots[slots.indexOf(e.target.value)+1] ?? "18:00");}}>
-          {slots.slice(0, -1).map(s => <option key={s}>{s}</option>)}
-        </select>
+        <input id="start-time" type="time" value={selectedStart} onChange={e=>setSelectedStart(e.target.value)} required/>
       </label>
       <label htmlFor="end-time"><Clock3 size={16}/> End time
-        <select id="end-time" value={selectedEnd} onChange={e => setSelectedEnd(e.target.value)}>
-          {endSlots.map(s => <option key={s}>{s}</option>)}
-        </select>
+        <input id="end-time" type="time" value={selectedEnd} onChange={e=>setSelectedEnd(e.target.value)} required/>
       </label>
       {(pastDate || pastTime) && <p className="form-error date-validation" role="alert">{pastDate ? "The booking date cannot be in the past." : "The selected start time has already passed. Choose a later time."}</p>}
     </section>
