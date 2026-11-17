@@ -182,7 +182,7 @@ Before deploying this update, run `npm run db:migrate` against the intended Neon
 | LIQPAY_PRIVATE_KEY | Actual sandbox_ private key; Render secret only |
 | LIQPAY_RESULT_URL | Optional HTTPS frontend return page; omit until a real page exists |
 
-Keep CORS_ORIGINS set to the actual HTTPS frontend origin(s). The callback is https://workstudio-api.onrender.com/api/payments/liqpay/callback; no extra callback URL setting or SMTP credentials are required. Missing/invalid LiqPay credentials produce a clear 503 only on payment operations; startup and /api/health remain available. Live keys are rejected even with NODE_ENV=production.
+Keep CORS_ORIGINS set to the explicit frontend origin(s), separated by commas. Production allows HTTP only for the exact hostnames localhost and 127.0.0.1 (for example http://localhost:5173,http://127.0.0.1:5173); all other origins require HTTPS. Restart/redeploy after manually changing environment settings. The callback is https://workstudio-api.onrender.com/api/payments/liqpay/callback; no extra callback URL setting or SMTP credentials are required. Missing/invalid LiqPay credentials produce a clear 503 only on payment operations; startup and /api/health remain available. Live keys are rejected even with NODE_ENV=production.
 
 Preview email returns a confirmation link and sends no email; it does not verify inbox ownership. The demonstration may run this way in production mode without weakening JWT, session, RBAC, HTTPS or signature checks. Local mock payments remain forbidden in production.
 
@@ -202,7 +202,7 @@ The script refuses an existing email and never promotes or overwrites an existin
 ## Development and security notes
 
 - Keep .env files, credentials, tokens, node_modules, compiled output and generated Prisma files out of Git. Commit .env.example, package-lock.json, the schema and migrations.
-- Use loopback HTTP only for local development. Production requires HTTPS, HTTPS public/CORS origins, and direct TLS or an accurately configured trusted reverse proxy.
+- Use loopback HTTP only for local development. Production requires HTTPS for the API and non-loopback CORS origins, and direct TLS or an accurately configured trusted reverse proxy.
 - Store bearer tokens securely and call logout to invalidate a session. Do not log passwords, raw tokens or confirmation links.
 - Expired unpaid holds become CANCELLED with PAYMENT_TIMEOUT; editing or retrying does not extend their original deadline. Clients cannot edit or cancel bookings.
 - Notifications are durable API records, not email or native push delivery. Logical deletion retains booking and audit history.

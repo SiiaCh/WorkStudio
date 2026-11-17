@@ -53,7 +53,7 @@ try {
   console.info("Created isolated database " + databaseName + ".");
   await run(["node_modules/prisma/build/index.js", "generate"]);
   await run(["node_modules/prisma/build/index.js", "migrate", "deploy"]);
-  await run(["--import", "tsx", "--test", "--test-concurrency=1", "tests/config.test.ts", "tests/api.test.ts", "tests/liqpay.test.ts"]);
+  await run(["--import", "tsx", "--test", "--test-concurrency=1", "tests/config.test.ts", "tests/cors.test.ts", "tests/api.test.ts", "tests/liqpay.test.ts"]);
 } catch {
   console.error("Tests could not complete. Check test output, PostgreSQL and CREATEDB permission; development data was not reset.");
   process.exitCode = 1;

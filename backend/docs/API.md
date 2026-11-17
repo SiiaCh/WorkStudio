@@ -144,7 +144,7 @@ Validation error example:
 {"error":{"code":"VALIDATION_ERROR","message":"Check the submitted fields.","details":[{"field":"password","message":"Too small: expected string to have >=8 characters"}]}}
 ```
 
-Use error codes as the stable application contract; human-readable validation messages may change with Zod. CORS allows only configured origins and the Content-Type/Authorization/Idempotency-Key headers. CORS is not authentication; Android and non-browser clients still need Bearer tokens.
+Use error codes as the stable application contract; human-readable validation messages may change with Zod. CORS allows only configured origins and the Content-Type/Authorization/Idempotency-Key headers. Production CORS configuration permits HTTP only for exact localhost/127.0.0.1 hostnames; other origins require HTTPS. Ports are part of the explicit allowlist and no wildcard is supported. CORS is not authentication; Android and non-browser clients still need Bearer tokens.
 
 ## PowerShell walkthrough
 

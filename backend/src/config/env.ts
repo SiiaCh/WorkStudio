@@ -51,8 +51,8 @@ const schema = z.object({
     try {
       const parsed = new URL(origin);
       if (!["http:", "https:"].includes(parsed.protocol) || parsed.origin !== origin) throw new Error();
-      if (value.NODE_ENV === "production" && parsed.protocol !== "https:") throw new Error();
-    } catch { issue("CORS_ORIGINS", "Use comma-separated HTTP(S) origins; production origins require HTTPS."); }
+      if (value.NODE_ENV === "production" && parsed.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(parsed.hostname)) throw new Error();
+    } catch { issue("CORS_ORIGINS", "Use comma-separated HTTP(S) origins; production origins require HTTPS except HTTP localhost or 127.0.0.1."); }
   }
   if (value.EMAIL_TRANSPORT === "smtp") {
     if (!value.SMTP_HOST || !value.SMTP_FROM) issue("SMTP_HOST", "SMTP mode requires SMTP_HOST and SMTP_FROM.");
