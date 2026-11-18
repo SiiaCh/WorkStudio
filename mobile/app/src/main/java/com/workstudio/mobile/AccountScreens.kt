@@ -46,8 +46,8 @@ internal fun Booking.payButtonLabel(): String = when {
 
 @Composable
 internal fun BookingsTab(
-    token: String, refreshKey: Int, busy: Boolean,
-    onError: (Exception) -> Unit, onPay: (Booking) -> Unit
+    token: String, refreshKey: Int, busy: Boolean, locations: Map<String, String>,
+    onError: (Exception) -> Unit, onPay: (Booking) -> Unit, onBookNew: () -> Unit
 ) {
     var calendarMode by rememberSaveable { mutableStateOf(true) }
     var manualRefresh by remember { mutableIntStateOf(0) }
@@ -68,12 +68,12 @@ internal fun BookingsTab(
             ModeChip("History", !calendarMode, Modifier.weight(1f)) { calendarMode = false }
         }
         Box(Modifier.weight(1f)) {
-            if (calendarMode) BookingCalendar(token, reloadKey, now, onError, onOpen = { details = it })
+            if (calendarMode) BookingCalendar(token, reloadKey, now, onError, onOpen = { details = it }, onBookNew = onBookNew)
             else BookingHistory(token, reloadKey, now, busy, onError, onOpen = { details = it }, onPay = onPay)
         }
     }
     details?.let { booking ->
-        BookingDetailsDialog(booking, now, busy,
+        BookingDetailsDialog(booking, locations[booking.workspaceId], now, busy,
             onPay = { details = null; onPay(booking) }, onDismiss = { details = null })
     }
 }
@@ -91,71 +91,97 @@ private fun ModeChip(label: String, selected: Boolean, modifier: Modifier, onCli
     }
 }
 
-/** Booking calendar (GET /bookings/calendar): month grid, tap a day to see its bookings. */
+/**
+ * Booking calendar (GET /bookings/calendar) with Day / Week / Month views (TC-12..TC-15).
+ * Only the client's own PENDING_PAYMENT / CONFIRMED bookings are returned by the server.
+ */
 @Composable
-private fun BookingCalendar(token: String, reloadKey: Int, now: Long, onError: (Exception) -> Unit, onOpen: (Booking) -> Unit) {
+private fun BookingCalendar(
+    token: String, reloadKey: Int, now: Long, onError: (Exception) -> Unit,
+    onOpen: (Booking) -> Unit, onBookNew: () -> Unit
+) {
     val today = todayInFacility()
-    val currentMonth = today.withDayOfMonth(1)
-    var month by rememberSaveable { mutableStateOf(currentMonth.toString()) }
+    var viewName by rememberSaveable { mutableStateOf(CalendarView.WEEK.name) }
+    val view = CalendarView.valueOf(viewName)
     var selected by rememberSaveable { mutableStateOf(today.toString()) }
+    val anchor = LocalDate.parse(selected)
+    val (from, to) = calendarRange(view, anchor)
     var entries by remember { mutableStateOf<List<Booking>?>(null) }
-    val first = LocalDate.parse(month)
+    var loadError by remember { mutableStateOf("") }
+    var retry by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(month, reloadKey) {
+    LaunchedEffect(from, to, reloadKey, retry) {
         entries = null
+        loadError = ""
         while (true) {
             try {
-                entries = WorkApi.calendar(token, first.toString(), first.plusMonths(1).minusDays(1).toString())
+                entries = WorkApi.calendar(token, from.toString(), to.toString())
+                loadError = ""
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { onError(e); entries = emptyList(); return@LaunchedEffect }
+            catch (e: Exception) {
+                // Never show an empty calendar as if it were current data: show the error with Retry.
+                if (e.isUnauthenticated) onError(e) else loadError = e.userMessage()
+                return@LaunchedEffect
+            }
             delay(15_000L)
         }
     }
 
-    fun showMonth(target: LocalDate) {
-        month = target.toString()
-        selected = (if (target == currentMonth) today else target).toString()
-    }
+    val inRange = entries.orEmpty().filter { it.date >= from.toString() && it.date <= to.toString() }
+        .sortedWith(compareBy({ it.date }, { it.startTime }))
+    val byDate = inRange.groupBy { it.date }
+    val prevEnabled = !calendarRange(view, shiftPeriod(view, anchor, -1)).second.isBefore(today)
 
-    val byDate = entries.orEmpty().groupBy { it.date }
-    val dayBookings = byDate[selected].orEmpty()
     LazyColumn(
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CalendarView.entries.forEach { option ->
+                    ModeChip(option.label, option == view, Modifier.weight(1f)) { viewName = option.name }
+                }
+            }
+        }
+        item {
             Surface(color = Color.White, shape = CardShape, modifier = Modifier.fillMaxWidth().border(1.dp, WorkColors.Ink, CardShape)) {
                 Column(Modifier.padding(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { showMonth(first.minusMonths(1)) }, enabled = first.isAfter(currentMonth)) { Text("‹", fontSize = 20.sp) }
-                        Text(first.format(DateTimeFormatter.ofPattern("LLLL yyyy", Locale.ENGLISH)),
-                            Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.ExtraBold, color = WorkColors.Ink)
-                        TextButton(onClick = { showMonth(first.plusMonths(1)) }) { Text("›", fontSize = 20.sp) }
+                        TextButton(
+                            onClick = { selected = shiftPeriod(view, anchor, -1).let { if (it.isBefore(today)) today else it }.toString() },
+                            enabled = prevEnabled
+                        ) { Text("‹", fontSize = 20.sp) }
+                        Text(periodTitle(view, anchor), Modifier.weight(1f), textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.ExtraBold, color = WorkColors.Ink)
+                        TextButton(onClick = { selected = shiftPeriod(view, anchor, 1).toString() }) { Text("›", fontSize = 20.sp) }
                     }
-                    Row {
-                        listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach {
-                            Text(it, Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 11.sp, color = WorkColors.Muted)
-                        }
-                    }
-                    val offset = first.dayOfWeek.value - 1
-                    val days = first.lengthOfMonth()
-                    val rows = (offset + days + 6) / 7
-                    for (row in 0 until rows) {
+                    if (view != CalendarView.DAY) {
                         Row {
-                            for (col in 0 until 7) {
-                                val day = row * 7 + col - offset + 1
-                                if (day in 1..days) {
-                                    val date = first.withDayOfMonth(day)
-                                    CalendarDay(
-                                        day = day, isToday = date == today, isSelected = date.toString() == selected,
-                                        isPast = date.isBefore(today), statuses = byDate[date.toString()].orEmpty().map { it.status }.distinct(),
-                                        modifier = Modifier.weight(1f), onClick = { selected = date.toString() }
-                                    )
-                                } else Spacer(Modifier.weight(1f).aspectRatio(1f))
+                            listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").forEach {
+                                Text(it, Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 11.sp, color = WorkColors.Muted)
+                            }
+                        }
+                        val gridStart = from.minusDays(from.dayOfWeek.value - 1L)
+                        val rows = if (view == CalendarView.MONTH) ((from.dayOfWeek.value - 1) + from.lengthOfMonth() + 6) / 7 else 1
+                        for (row in 0 until rows) {
+                            Row {
+                                for (col in 0 until 7) {
+                                    val date = gridStart.plusDays(row * 7L + col)
+                                    if (!date.isBefore(from) && !date.isAfter(to)) {
+                                        CalendarDay(
+                                            day = date.dayOfMonth, isToday = date == today, isSelected = date == anchor,
+                                            isPast = date.isBefore(today),
+                                            statuses = byDate[date.toString()].orEmpty().map { it.status }.distinct(),
+                                            modifier = Modifier.weight(1f), onClick = { selected = date.toString() }
+                                        )
+                                    } else Spacer(Modifier.weight(1f).aspectRatio(1f))
+                                }
                             }
                         }
                     }
-                    if (entries == null) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = WorkColors.Blue)
+                    if (entries == null && loadError.isBlank()) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = WorkColors.Blue)
+                    }
                     Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         LegendDot(WorkColors.Brown, "Awaiting payment")
                         LegendDot(WorkColors.DarkGreen, "Confirmed")
@@ -163,12 +189,37 @@ private fun BookingCalendar(token: String, reloadKey: Int, now: Long, onError: (
                 }
             }
         }
+        if (loadError.isNotBlank()) {
+            item {
+                Text(loadError, color = WorkColors.Red, fontSize = 12.sp)
+                Spacer(Modifier.height(6.dp))
+                SecondaryButton("Retry", onClick = { retry++ })
+            }
+            return@LazyColumn
+        }
+        if (entries == null) return@LazyColumn
         item {
-            Text(displayDate(selected), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = WorkColors.Ink)
             Text("Current and upcoming active bookings. Past and cancelled ones are in History.", fontSize = 11.sp, color = WorkColors.Muted)
         }
-        if (entries != null && dayBookings.isEmpty()) item { EmptyState("No bookings on this day.") }
-        items(dayBookings, key = { it.id }) { booking -> BookingCard(booking, now, onClick = { onOpen(booking) }) }
+        if (inRange.isEmpty()) {
+            // TC-15: empty period -> message and a way to the booking screen.
+            item {
+                EmptyState("No upcoming bookings found")
+                Spacer(Modifier.height(8.dp))
+                PrimaryButton("Book a workspace", onClick = onBookNew)
+            }
+            return@LazyColumn
+        }
+        // Month: bookings of the tapped day. Week / Day: every booking of the period grouped by day.
+        val shownDays = if (view == CalendarView.MONTH) listOf(anchor.toString()) else byDate.keys.toList()
+        shownDays.forEach { day ->
+            val dayBookings = byDate[day].orEmpty()
+            item(key = "h$day") {
+                Text(displayDate(day), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = WorkColors.Ink)
+            }
+            if (dayBookings.isEmpty()) item(key = "e$day") { EmptyState("No bookings on this day.") }
+            items(dayBookings, key = { it.id }) { booking -> BookingCard(booking, now, onClick = { onOpen(booking) }) }
+        }
     }
 }
 
@@ -264,6 +315,7 @@ private fun BookingCard(
             }
             Spacer(Modifier.height(4.dp))
             Text("${displayDate(booking.date)} · ${booking.startTime}–${booking.endTime}", fontSize = 12.sp, color = WorkColors.Ink)
+            if (booking.isRecurring) Text("Recurring booking", fontSize = 11.sp, color = WorkColors.Blue)
             Text("${booking.tariffName} · ₴${moneyLabel(booking.amount)}", fontSize = 13.sp, color = WorkColors.Ink, fontWeight = FontWeight.Medium)
             Text("Payment: ${paymentStatusLabel(booking.paymentStatus)}", fontSize = 12.sp,
                 color = if (booking.paymentStatus == "REQUIRES_REVIEW") WorkColors.Red else WorkColors.Ink)
@@ -283,7 +335,7 @@ private fun BookingCard(
 
 /** Booking details shown from the calendar or history. */
 @Composable
-private fun BookingDetailsDialog(booking: Booking, now: Long, busy: Boolean, onPay: () -> Unit, onDismiss: () -> Unit) {
+private fun BookingDetailsDialog(booking: Booking, location: String?, now: Long, busy: Boolean, onPay: () -> Unit, onDismiss: () -> Unit) {
     val (pillBg, pillInk) = bookingStatusColors(booking.status)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -291,6 +343,7 @@ private fun BookingDetailsDialog(booking: Booking, now: Long, busy: Boolean, onP
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StatusPill(bookingStatusLabel(booking.status, booking.cancellationReason), pillBg, pillInk)
+                InfoRow("Location", location?.takeIf { it.isNotBlank() } ?: "—")
                 InfoRow("Date", displayDate(booking.date))
                 InfoRow("Time", "${booking.startTime}–${booking.endTime}")
                 InfoRow("Tariff", booking.tariffName)
@@ -300,7 +353,8 @@ private fun BookingDetailsDialog(booking: Booking, now: Long, busy: Boolean, onP
                     val left = secondsUntil(booking.paymentDeadline, now)
                     InfoRow("Pay within", if (left > 0) countdown(left) else "expired")
                 }
-                InfoRow("Reference", booking.id.take(8).uppercase())
+                if (booking.isRecurring) InfoRow("Type", "Recurring")
+                InfoRow("Reservation ID", booking.reference.ifBlank { booking.id })
             }
         },
         confirmButton = {

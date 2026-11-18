@@ -15,7 +15,7 @@ Kotlin + Jetpack Compose, no third-party networking libraries. UI language: Engl
 | Workspace details | Type, zone, features, current status and free time ranges for the day (`GET /workspaces/:id/available-slots`); tapping a range fills From/To |
 | Tariffs | Prices loaded from `GET /tariffs` (never hard-coded); a tariff price is a fixed price per booking |
 | Booking | Confirmation dialog → `POST /bookings`; `409` conflict / invalid period → clear message and return to selection |
-| My bookings | **Calendar** (`GET /bookings/calendar`): month grid with markers for awaiting-payment / confirmed days, tap a day → its bookings, tap a booking → details. **History** (`GET /bookings/history`) with pagination. Status badges, payment deadline countdown, booking details dialog with Pay action |
+| My bookings | **Calendar** (`GET /bookings/calendar`): Day / Week / Month views (week by default), "No upcoming bookings found" + "Book a workspace" when empty, retry on errors; month grid with markers for awaiting-payment / confirmed days, tap a day → its bookings, tap a booking → details. **History** (`GET /bookings/history`) with pagination. Status badges, payment deadline countdown, booking details dialog with Pay action |
 | Payment | LiqPay **test** hosted checkout in a WebView (`POST /bookings/:id/payments/liqpay`), shown only when the backend reports `paymentIntegrationAvailable`. Card data is entered only on the LiqPay page. The booking is confirmed only by the server after the signed callback; the app just refreshes the status |
 | Profile | Name, email, role, email verification status, resend verification, logout |
 
@@ -85,7 +85,7 @@ For a local backend: change `StudioApi.ROOT` to `http://127.0.0.1:3000/api`, run
 
 ## Tests
 
-- Unit tests: `BookingValidationTest` (TC-03 client-side period validation), `FormattersTest` (time options, labels, dates).
+- Unit tests: `BookingValidationTest` (TC-03 client-side period validation), `FormattersTest` (time options, labels, dates), `CalendarPeriodTest` (TC-13 Day / Week / Month periods).
 - Functional scenarios TC-01…TC-08 and TC-11 are executed by the QA team; this README is not a test report.
 
 ## Secrets and Git

@@ -104,3 +104,31 @@ internal fun freeRangesEmptyLabel(reason: String?): String = when (reason) {
     "NO_AVAILABLE_RANGES" -> "No free time left on this date. Try another day."
     else -> "No free time ranges for this date."
 }
+
+// ---------- booking calendar periods (TC-13: Day / Week / Month) ----------
+
+internal enum class CalendarView(val label: String) { DAY("Day"), WEEK("Week"), MONTH("Month") }
+
+/** Inclusive date range shown for [view] around [anchor]; weeks start on Monday. */
+internal fun calendarRange(view: CalendarView, anchor: LocalDate): Pair<LocalDate, LocalDate> = when (view) {
+    CalendarView.DAY -> anchor to anchor
+    CalendarView.WEEK -> anchor.minusDays(anchor.dayOfWeek.value - 1L).let { it to it.plusDays(6) }
+    CalendarView.MONTH -> anchor.withDayOfMonth(1).let { it to it.plusMonths(1).minusDays(1) }
+}
+
+/** Moves [anchor] by [steps] periods of [view]. */
+internal fun shiftPeriod(view: CalendarView, anchor: LocalDate, steps: Long): LocalDate = when (view) {
+    CalendarView.DAY -> anchor.plusDays(steps)
+    CalendarView.WEEK -> anchor.plusWeeks(steps)
+    CalendarView.MONTH -> anchor.plusMonths(steps)
+}
+
+internal fun periodTitle(view: CalendarView, anchor: LocalDate): String {
+    val (from, to) = calendarRange(view, anchor)
+    return when (view) {
+        CalendarView.DAY -> from.format(DateTimeFormatter.ofPattern("EEE, MMM d yyyy", Locale.ENGLISH))
+        CalendarView.WEEK -> from.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH)) + " – " +
+            to.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH))
+        CalendarView.MONTH -> from.format(DateTimeFormatter.ofPattern("LLLL yyyy", Locale.ENGLISH))
+    }
+}

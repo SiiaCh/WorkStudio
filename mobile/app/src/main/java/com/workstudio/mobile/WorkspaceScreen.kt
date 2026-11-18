@@ -56,6 +56,8 @@ internal fun ClientHome(
 
     var availability by remember { mutableStateOf<Availability?>(null) }
     var schedule by remember { mutableStateOf<Map<String, OpeningHours?>>(emptyMap()) }
+    /** workspaceId -> location, used by booking details (the booking API returns only the workspace name). */
+    var locations by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var spacesError by remember { mutableStateOf("") }
     var spacesRefresh by remember { mutableIntStateOf(0) }
     var bookingsRefresh by remember { mutableIntStateOf(0) }
@@ -91,6 +93,7 @@ internal fun ClientHome(
                 val result = WorkApi.availability(date, start, end)
                 availability = result
                 schedule = result.openingHours
+                locations = locations + result.workspaces.associate { it.id to it.location }
                 spacesError = ""
                 result.pollIntervalMs
             } catch (e: CancellationException) { throw e }
@@ -149,8 +152,8 @@ internal fun ClientHome(
                     }
                 )
                 TAB_BOOKINGS -> BookingsTab(
-                    token = token.orEmpty(), refreshKey = bookingsRefresh, busy = busy,
-                    onError = ::fail, onPay = { payFor = it }
+                    token = token.orEmpty(), refreshKey = bookingsRefresh, busy = busy, locations = locations,
+                    onError = ::fail, onPay = { payFor = it }, onBookNew = { tab = TAB_SPACES; notice = null }
                 )
                 TAB_TARIFFS -> TariffsTab(
                     token = token.orEmpty(), selectedSpace = selectedSpace, date = date, start = start, end = end,
@@ -216,7 +219,8 @@ internal fun ClientHome(
                                 selectedSpace = null
                                 tab = TAB_BOOKINGS
                                 bookingsRefresh++
-                                notice = Notice("Workspace reserved — awaiting payment before the deadline.", false)
+                                notice = Notice("Workspace reserved (ref. ${booking.reference.take(8).uppercase()}) — " +
+                                    "awaiting payment before the deadline.", false)
                                 if (booking.isAwaitingPayment && booking.paymentIntegrationAvailable) payFor = booking
                             } catch (e: CancellationException) { throw e }
                             catch (e: Exception) {

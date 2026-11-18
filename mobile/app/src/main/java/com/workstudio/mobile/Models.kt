@@ -58,7 +58,11 @@ internal data class Booking(
     val paymentDeadline: String?,
     val paymentIntegrationAvailable: Boolean,
     /** LIQPAY_TEST, MOCK or null. */
-    val paymentProvider: String?
+    val paymentProvider: String?,
+    val workspaceId: String = "",
+    /** Full booking reference (UUID) as stored on the server. */
+    val reference: String = "",
+    val isRecurring: Boolean = false
 ) {
     val isAwaitingPayment: Boolean get() = status == "PENDING_PAYMENT"
 }
@@ -127,5 +131,8 @@ internal fun JSONObject.toBooking() = Booking(
     amount = optString("amount"), currency = optString("currency", "UAH"),
     paymentStatus = stringOrNull("paymentStatus"), paymentDeadline = stringOrNull("paymentDeadline"),
     paymentIntegrationAvailable = optBoolean("paymentIntegrationAvailable"),
-    paymentProvider = stringOrNull("paymentProvider")
+    paymentProvider = stringOrNull("paymentProvider"),
+    workspaceId = optString("workspaceId"),
+    reference = stringOrNull("reference") ?: optString("id"),
+    isRecurring = optBoolean("isRecurring")
 )

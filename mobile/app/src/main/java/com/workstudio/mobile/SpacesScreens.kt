@@ -162,6 +162,7 @@ private fun WorkspaceCard(space: Workspace, start: String, end: String, isGuest:
                     Text(space.name, color = WorkColors.Ink, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
                     Text(listOf(space.type, space.location).filter { it.isNotBlank() }.joinToString(" · "),
                         color = WorkColors.Ink, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    if (space.description.isNotBlank()) Text(space.description, color = WorkColors.Muted, fontSize = 11.sp)
                 }
                 StatusPill(badge.label, badge.background, badge.foreground)
             }
