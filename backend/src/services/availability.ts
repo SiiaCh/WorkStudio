@@ -26,7 +26,7 @@ export async function availability(input: z.infer<typeof availabilitySchema>) {
     prisma.booking.findMany({ where: { ...activeWhere(now), startsAt: { lt: searchEnd }, endsAt: { gt: interval?.startsAt ?? now } } }),
   ], { isolationLevel: "RepeatableRead" });
   const results = workspaces.map(workspace => {
-    const reason = !interval ? "FACILITY_CLOSED" : interval.endsAt <= now ? "INTERVAL_IN_PAST" : blockedReason(workspace, interval, bookings, now);
+    const reason = !interval ? "FACILITY_CLOSED" : interval.startsAt < now ? "INTERVAL_IN_PAST" : blockedReason(workspace, interval, bookings, now);
     const next = interval ? bookings.filter(booking => booking.workspaceId === workspace.id && booking.startsAt >= interval.startsAt).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0] : undefined;
     const until = !reason && bounds ? new Date(Math.min(bounds.endsAt.getTime(), next?.startsAt.getTime() ?? Infinity)) : null;
     return { ...workspaceView(workspace), available: !reason, unavailableReason: reason, availableUntil: until };

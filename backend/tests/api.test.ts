@@ -1,4 +1,4 @@
-import { before, after, describe, test } from "node:test";
+import { before, after, describe, test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -8,7 +8,7 @@ import { Client } from "pg";
 import { app } from "../src/app.js";
 import { prisma } from "../src/db/prisma.js";
 import { env } from "../src/config/env.js";
-import { addDays, localParts, weekday } from "../src/config/facility.js";
+import { addDays, localParts, localInstant, weekday, facility, weekdayNames } from "../src/config/facility.js";
 import { refreshLifecycle, startReservationWorker } from "../src/services/lifecycle.js";
 import { password, setBase, request, ok, error, register, paymentPath, pay as simulate } from "./helpers.js";
 
@@ -376,6 +376,103 @@ describe("HTTP integration", { concurrency: false }, () => {
       assert.equal(result.body.error.code, "BOOKING_CHANGED");
       assert.equal((await prisma.booking.findUniqueOrThrow({ where: { id: b.id } })).status, "PENDING_PAYMENT");
     } finally { await blocker.query("ROLLBACK"); await blocker.end(); }
+  });
+  test("recurring permissions, limits, concurrent conflicts and series links", async () => {
+    const {workspace,tariff}=await catalog();
+    const input={workspaceId:workspace.id,tariffId:tariff.id,fromDate:date,toDate:addDays(date,7),weekdays:[weekday(date)||7],startTime:"08:00",endTime:"12:00",confirm:true};
+    await error("/bookings/recurring",{method:"POST",body:input},401);
+    await error("/bookings/recurring",{token:admin,method:"POST",body:input},403);
+    await error("/bookings/recurring",{token:unverified,method:"POST",body:input},403);
+    for(const change of [{weekdays:[1,1]},{toDate:addDays(date,-1)},{startTime:"07:59"},{endTime:"22:01"},{toDate:addDays(date,env.MAX_RECURRING_OCCURRENCES*7+8)}]) await error("/bookings/recurring",{token:client,method:"POST",body:{...input,...change}},400);
+    const before=await prisma.bookingSeries.count();
+    const results=await Promise.all([client,other].map(token=>request("/bookings/recurring",{token,method:"POST",body:input})));
+    assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);
+    assert.equal(await prisma.bookingSeries.count(),before+1);
+    const result=results.find(r=>r.status===201)!.body.data;
+    assert.equal(result.bookings.length,2);assert.equal(result.totalAmount,"300.00");
+    for(const b of result.bookings){assert.equal(b.seriesId,result.series.id);assert.equal(b.amount,"150.00");assert.equal(b.status,"PENDING_PAYMENT");}
+  });
+  test("history pagination/filtering and calendar distinguish ongoing, future and past without owner leaks", async()=>{
+    const {workspace,tariff}=await catalog();const now=Date.now();
+    const ongoing=await fixture(workspace,tariff,{status:"CONFIRMED",startsAt:new Date(now-60000),endsAt:new Date(now+600000)});
+    const past=await fixture(workspace,tariff,{status:"CONFIRMED",startsAt:new Date(now-7200000),endsAt:new Date(now-3600000)});
+    const future=await booking(workspace,tariff);
+    const path="/bookings/history?fromDate="+addDays(localParts(new Date()).date,-1)+"&toDate="+date;
+    const history=await ok(path+"&pageSize=100",{token:client});
+    for(const id of [ongoing.id,past.id,future.id])assert(history.bookings.some((b:any)=>b.id===id), "Missing fixture "+id+"; returned "+history.bookings.length+" of "+history.total);
+    const page1=await ok(path+"&pageSize=1&page=1",{token:client}),page2=await ok(path+"&pageSize=1&page=2",{token:client});
+    assert.equal(page1.bookings.length,1);assert.equal(page1.total,page2.total);assert.notEqual(page1.bookings[0].id,page2.bookings[0].id);
+    const completed=await ok(path+"&status=COMPLETED",{token:client});assert(completed.bookings.some((b:any)=>b.id===past.id));
+    const calendar=await ok("/bookings/calendar?fromDate="+addDays(localParts(new Date()).date,-1)+"&toDate="+date,{token:client});
+    assert(calendar.bookings.some((b:any)=>b.id===ongoing.id));assert(calendar.bookings.some((b:any)=>b.id===future.id));assert(!calendar.bookings.some((b:any)=>b.id===past.id));
+    const otherCalendar=await ok("/bookings/calendar?fromDate="+addDays(localParts(new Date()).date,-1)+"&toDate="+date,{token:other});
+    for(const b of otherCalendar.bookings)assert.notEqual(b.userId,ownerId);
+    await error("/bookings/history?userId="+ownerId,{token:other},400);
+    await error("/bookings/calendar",{},401);
+  });
+  test("public map/status data excludes archives and private fields; status updates remain administrator-only",async()=>{
+    const {workspace}=await catalog();const catalogData=await ok("/workspaces");const view=catalogData.workspaces.find((w:any)=>w.id===workspace.id);
+    assert.deepEqual(view.mapPosition,{x:0.25,y:0.5});assert.equal(view.status,"FREE");
+    for(const field of ["userId","bookings","passwordHash","deletedAt"])assert.equal(field in view,false);
+    const path="/admin/workspaces/"+workspace.id+"/status";
+    await error(path,{method:"PATCH",key:randomUUID(),body:{status:"OCCUPIED",version:1}},401);
+    await error(path,{token:client,method:"PATCH",key:randomUUID(),body:{status:"OCCUPIED",version:1}},403);
+    await ok(path,adminOptions("PATCH",{status:"OCCUPIED",version:1}));
+    assert.equal((await ok("/workspaces/"+workspace.id)).workspace.status,"OCCUPIED");
+    await ok("/admin/workspaces/"+workspace.id,adminOptions("DELETE",{version:2,confirm:true}));
+    assert(!(await ok("/workspaces")).workspaces.some((w:any)=>w.id===workspace.id));
+    await error("/workspaces/"+workspace.id+"/available-slots?date="+date,{},404);
+  });
+  test("availability excludes partial-past intervals, expired holds, adjacent blocks and operating boundaries",async()=>{
+    const {workspace,tariff}=await catalog();
+    await fixture(workspace,tariff,{status:"CONFIRMED",startsAt:localInstant(date,"10:00"),endsAt:localInstant(date,"11:00")});
+    await fixture(workspace,tariff,{status:"CONFIRMED",startsAt:localInstant(date,"11:00"),endsAt:localInstant(date,"12:00")});
+    await fixture(workspace,tariff,{startsAt:localInstant(date,"14:00"),endsAt:localInstant(date,"15:00")}); // expired hold
+    const slotsPath="/workspaces/"+workspace.id+"/available-slots?date="+date;
+    const slots=await ok(slotsPath);assert.deepEqual(slots.availableRanges.map((r:any)=>[r.startTime,r.endTime]),[["08:00","10:00"],["12:00","22:00"]]);
+    for(const range of slots.availableRanges){const result=await ok("/workspaces/availability?date="+date+"&startTime="+range.startTime+"&endTime="+range.endTime);assert(result.workspaces.find((w:any)=>w.id===workspace.id).available);}
+    await error("/workspaces/availability?date="+date+"&startTime=07:59&endTime=09:00",{},400);
+    await error("/workspaces/availability?date="+date+"&startTime=21:00&endTime=22:01",{},400);
+    await error("/workspaces/"+workspace.id+"/available-slots?date=2027-02-30",{},400);
+    mock.timers.enable({apis:["Date"],now:localInstant(date,"09:30").getTime()});
+    try{
+      const result=await ok("/workspaces/availability?date="+date+"&startTime=09:00&endTime=10:00");const w=result.workspaces.find((w:any)=>w.id===workspace.id);assert.equal(w.available,false);assert.equal(w.unavailableReason,"INTERVAL_IN_PAST");
+      assert.equal((await ok(slotsPath)).availableRanges[0].startTime,"09:31");
+      await error("/workspaces/"+workspace.id+"/available-slots?date="+addDays(date,-1),{},400);
+    }finally{mock.timers.reset();}
+    const key=weekdayNames[weekday(date)]!;const hours=facility.openingHours[key];facility.openingHours[key]=null;
+    try{const closed=await ok(slotsPath);assert.equal(closed.unavailableReason,"FACILITY_CLOSED");assert.deepEqual(closed.availableRanges,[]);}finally{facility.openingHours[key]=hours;}
+  });
+  test("recurrence preserves local times across DST with a fixed 100 UAH price per occurrence",async()=>{
+    const {workspace,tariff}=await catalog();
+    await ok("/admin/tariffs/"+tariff.id,adminOptions("PATCH",{version:1,price:"100.00"}));
+    const year=new Date().getUTCFullYear()+1;
+    const marchEnd=new Date(Date.UTC(year,2,31,12));
+    const transition=addDays(marchEnd.toISOString().slice(0,10),-marchEnd.getUTCDay());
+    const input={workspaceId:workspace.id,tariffId:tariff.id,fromDate:addDays(transition,-7),toDate:transition,weekdays:[7],startTime:"08:00",endTime:"12:00",confirm:true};
+    const preview=await ok("/bookings/recurring/preview",{token:client,method:"POST",body:input});
+    assert.equal(preview.totalAmount,"200.00");
+    const result=await ok("/bookings/recurring",{token:client,method:"POST",body:input},201);
+    assert.equal(result.bookings.length,2);assert.equal(result.totalAmount,"200.00");
+    for(const b of result.bookings){assert.equal(b.startTime,"08:00");assert.equal(b.endTime,"12:00");assert.equal(b.amount,"100.00");assert.equal(b.seriesId,result.series.id);}
+    assert.equal(new Date(result.bookings[1].startsAt).getTime()-new Date(result.bookings[0].startsAt).getTime(),(7*24-1)*3600000);
+  });
+  test("full-day holds, Unavailable and Occupied remain consistent across availability APIs",async()=>{
+    const {workspace,tariff}=await catalog();
+    const b=await booking(workspace,tariff,{startTime:"08:00",endTime:"22:00"});
+    const slots="/workspaces/"+workspace.id+"/available-slots?date="+date;
+    const interval="/workspaces/availability?date="+date+"&startTime=08:00&endTime=22:00";
+    assert.equal((await ok(slots)).unavailableReason,"NO_AVAILABLE_RANGES");
+    assert.equal((await ok(interval)).workspaces.find((w:any)=>w.id===workspace.id).available,false);
+    await ok("/admin/bookings/"+b.id+"/cancel",adminOptions("POST",{version:1,confirm:true}));
+    assert.deepEqual((await ok(slots)).availableRanges.map((r:any)=>[r.startTime,r.endTime]),[["08:00","22:00"]]);
+    const status="/admin/workspaces/"+workspace.id+"/status";
+    await ok(status,adminOptions("PATCH",{version:1,status:"OCCUPIED"}));
+    assert.equal((await ok(interval)).workspaces.find((w:any)=>w.id===workspace.id).available,true);
+    assert.equal((await ok(slots)).availableRanges.length,1);
+    await ok(status,adminOptions("PATCH",{version:2,status:"UNAVAILABLE",confirm:true}));
+    const unavailable=await ok(slots);assert.deepEqual(unavailable.availableRanges,[]);assert.equal(unavailable.unavailableReason,"WORKSPACE_UNAVAILABLE");
+    assert.equal((await ok(interval)).workspaces.find((w:any)=>w.id===workspace.id).unavailableReason,"WORKSPACE_UNAVAILABLE");
   });
   test("idle sessions expire and persistent failed-login limits block correct-password bypass", async () => {
     const login = await ok("/auth/login", { method: "POST", body: { email: "other@example.com", password } });
